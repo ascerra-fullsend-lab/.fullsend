@@ -211,12 +211,12 @@ jobs:
           ref: ${{ steps.context.outputs.head_ref }}
 
       - name: Pre-fetch review body
-        if: inputs.trigger_source == 'bot'
         id: review-body
         env:
           GH_TOKEN: ${{ steps.sandbox-token.outputs.token }}
           SOURCE_REPO: ${{ inputs.source_repo }}
           PR_NUM: ${{ steps.context.outputs.pr_number }}
+          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
         run: |
           REVIEW_FILE="${GITHUB_WORKSPACE}/review-body.txt"
           gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
@@ -224,7 +224,7 @@ jobs:
             > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
           BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
           echo "Pre-fetched review body: ${BYTE_COUNT} bytes"
-          if [[ "${BYTE_COUNT}" -le 1 ]]; then
+          if [[ "${TRIGGER_SOURCE}" == "bot" && "${BYTE_COUNT}" -le 1 ]]; then
             echo "::error::Bot-triggered run but review body is empty — nothing to fix"
             exit 1
           fi
@@ -278,6 +278,6 @@ jobs:
           TRIGGER_SOURCE: ${{ inputs.trigger_source }}
           HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
           FIX_ITERATION: ${{ steps.context.outputs.iteration }}
-          REVIEW_BODY_FILE: ${{ steps.review-body.outputs.review_file || '' }}
+          REVIEW_BODY_FILE: ${{ steps.review-body.outputs.review_file }}
         with:
           agent: fix
