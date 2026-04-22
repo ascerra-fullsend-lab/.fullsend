@@ -1,0 +1,31 @@
+# fullsend organization configuration
+# https://github.com/fullsend-ai/fullsend
+#
+# This file is managed by fullsend. Manual edits may be overwritten.
+version: "1"
+dispatch:
+    platform: github-actions
+defaults:
+    roles:
+        - fullsend
+        - triage
+        - coder
+        - review
+    max_implementation_retries: 2
+    auto_merge: false
+agents:
+    - role: fullsend
+      name: ascerra-fullsend-lab-fullsend
+      slug: ascerra-fullsend-lab-fullsend
+    - role: triage
+      name: ascerra-fullsend-lab-triage
+      slug: ascerra-fullsend-lab-triage
+    - role: coder
+      name: ascerra-fullsend-lab-coder
+      slug: ascerra-fullsend-lab-coder
+    - role: review
+      name: ascerra-fullsend-lab-review
+      slug: ascerra-fullsend-lab-review
+repos:
+    fix-agent-test:
+        enabled: true
