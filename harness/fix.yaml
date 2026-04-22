@@ -24,7 +24,7 @@ host_files:
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/workspace/.gcp-credentials.json
-  - src: ${REVIEW_BODY_FILE:-/dev/null}
+  - src: ${REVIEW_BODY_FILE}
     dest: /tmp/workspace/review-body.txt
 
 skills:
