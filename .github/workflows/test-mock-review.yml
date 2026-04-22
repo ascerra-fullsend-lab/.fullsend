@@ -1,0 +1,41 @@
+name: Test - Mock Review Bot
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        required: true
+        type: string
+        description: "Target repo name (not full path, just the repo name)"
+      pr_number:
+        required: true
+        type: string
+        description: "PR number to review"
+      review_body:
+        required: true
+        type: string
+        description: "Review body to post"
+jobs:
+  mock-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate review app token
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.inputs.repo }}
+      - name: Post changes_requested review
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          FULL_REPO: ${{ github.repository_owner }}/${{ github.event.inputs.repo }}
+          PR_NUM: ${{ github.event.inputs.pr_number }}
+          REVIEW_BODY: ${{ github.event.inputs.review_body }}
+        run: |
+          echo "Posting changes_requested review on ${FULL_REPO}#${PR_NUM}"
+          gh api "repos/${FULL_REPO}/pulls/${PR_NUM}/reviews" \
+            -f body="${REVIEW_BODY}" \
+            -f event="REQUEST_CHANGES" \
+            --jq '.id'
+          echo "Review posted successfully"
