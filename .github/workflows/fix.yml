@@ -145,7 +145,10 @@ jobs:
           echo "PR #${PR_NUM}: ${HEAD_REF} → ${BASE_REF}"
 
           # Extract human instruction (from /fix comment or workflow_dispatch).
-          INSTRUCTION=""
+          # Default to "none" so the env var is always non-empty (the fullsend
+          # binary rejects empty runner_env values). The agent checks
+          # TRIGGER_SOURCE before reading this value.
+          INSTRUCTION="none"
           if [[ "${TRIGGER_SOURCE}" == "human" ]]; then
             COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty')"
             if [[ -n "${COMMENT_BODY}" ]]; then
@@ -154,6 +157,9 @@ jobs:
             fi
             if [[ -z "${INSTRUCTION}" && -n "${INPUT_INSTRUCTION}" ]]; then
               INSTRUCTION="${INPUT_INSTRUCTION}"
+            fi
+            if [[ -z "${INSTRUCTION}" ]]; then
+              INSTRUCTION="none"
             fi
           fi
           # Use heredoc delimiter for multiline-safe output.
