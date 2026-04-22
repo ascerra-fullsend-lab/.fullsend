@@ -56,6 +56,7 @@ GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470e
 # Setup
 # ---------------------------------------------------------------------------
 REPO_DIR="${REPO_DIR:-repo}"
+RUN_DIR="$(pwd)"
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
@@ -194,12 +195,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROCESS_SCRIPT="${SCRIPT_DIR}/process-fix-result.py"
 
 # Find fix-result.json in the output directory.
-# The post-script runs with cwd = runDir (<outputBase>/<sandboxName>).
-# The agent writes to iteration-<N>/output/fix-result.json within that.
-# Pick the latest iteration's result.
+# RUN_DIR is the original cwd (runDir = <outputBase>/<sandboxName>), saved
+# before we cd'd into REPO_DIR. The agent writes its structured output to
+# iteration-<N>/output/fix-result.json within runDir.
 RESULT_FILE=""
 # shellcheck disable=SC2086
-FOUND="$(ls -t iteration-*/output/fix-result.json 2>/dev/null | head -1 || true)"
+FOUND="$(ls -t "${RUN_DIR}"/iteration-*/output/fix-result.json 2>/dev/null | head -1 || true)"
 if [ -n "${FOUND}" ]; then
   RESULT_FILE="${FOUND}"
 fi
