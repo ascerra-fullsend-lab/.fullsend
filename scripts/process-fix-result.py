@@ -11,6 +11,7 @@ Exit codes:
     0 — summary posted (or dry-run completed)
     1 — invalid arguments or unreadable input file
 """
+
 import json
 import subprocess
 import sys
@@ -56,9 +57,7 @@ def build_summary_body(data):
             rationale = dp.get("rationale", "")
             alts = dp.get("alternatives", [])
             alt_text = ", ".join(alts) if alts else "none considered"
-            dp_items.append(
-                f"- {desc} (alternatives: {alt_text}; rationale: {rationale})"
-            )
+            dp_items.append(f"- {desc} (alternatives: {alt_text}; rationale: {rationale})")
         dp_text = (
             "\n<details>\n<summary>Decision points</summary>\n\n"
             + "\n".join(dp_items)
@@ -82,8 +81,8 @@ def build_summary_body(data):
         sections.append(dp_text)
 
     sections.append(
-        f'\n<sub>Updated by <a href="https://github.com/fullsend-ai/fullsend">'
-        f"fullsend</a> fix agent</sub>"
+        '\n<sub>Updated by <a href="https://github.com/fullsend-ai/fullsend">'
+        "fullsend</a> fix agent</sub>"
     )
 
     return "\n".join(sections)
@@ -96,15 +95,21 @@ def post_summary(repo, pr_number, body, dry_run=False):
     """Post a summary comment on the PR."""
     if len(body) > MAX_COMMENT_LENGTH:
         truncation_notice = "\n\n*[truncated — output exceeded 32KB]*"
+        original_len = len(body)
         body = body[: MAX_COMMENT_LENGTH - len(truncation_notice)] + truncation_notice
-        print(f"::warning::Comment body truncated from {len(body)} to {MAX_COMMENT_LENGTH} chars")
+        print(
+            f"::warning::Comment body truncated from {original_len} to {MAX_COMMENT_LENGTH} chars"
+        )
     if dry_run:
         print(f"  [dry-run] Would post PR summary ({len(body)} chars)")
         return True
     try:
         subprocess.run(
-            ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body", body],
-            check=True, capture_output=True, text=True,
+            ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body-file", "-"],
+            input=body,
+            check=True,
+            capture_output=True,
+            text=True,
         )
         return True
     except subprocess.CalledProcessError as e:
@@ -149,9 +154,9 @@ def main(argv=None):
     print(f"Processed: {fixed} fixed, {disagreed} disagreed")
 
     summary_body = build_summary_body(data)
-    post_summary(repo, pr_number, summary_body, dry_run)
+    success = post_summary(repo, pr_number, summary_body, dry_run)
 
-    return 0
+    return 0 if success else 2
 
 
 if __name__ == "__main__":
