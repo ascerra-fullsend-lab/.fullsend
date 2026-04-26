@@ -72,9 +72,28 @@ jobs:
             exit 1
           fi
 
+      - name: Extract target repo name
+        id: repo-parts
+        env:
+          SOURCE_REPO: ${{ inputs.source_repo }}
+        run: echo "name=${SOURCE_REPO##*/}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate sandbox token (read-only)
+        id: sandbox-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FULLSEND_CODER_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_CODER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repo-parts.outputs.name }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+          permission-metadata: read
+
       - name: Block fork PRs
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.sandbox-token.outputs.token }}
           EVENT_PAYLOAD: ${{ inputs.event_payload }}
           SOURCE_REPO: ${{ inputs.source_repo }}
           PR_NUM_INPUT: ${{ inputs.pr_number }}
@@ -104,7 +123,7 @@ jobs:
       - name: Extract PR number and context
         id: context
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.sandbox-token.outputs.token }}
           EVENT_PAYLOAD: ${{ inputs.event_payload }}
           INPUT_PR_NUMBER: ${{ inputs.pr_number }}
           INPUT_INSTRUCTION: ${{ inputs.instruction }}
@@ -162,11 +181,13 @@ jobs:
               INSTRUCTION="none"
             fi
           fi
-          # Use heredoc delimiter for multiline-safe output.
+          # Use a random heredoc delimiter so a /fix comment containing
+          # the literal delimiter string cannot inject GITHUB_OUTPUT values.
+          DELIM="INSTRUCTION_$(openssl rand -hex 8)"
           {
-            echo "instruction<<INSTRUCTION_EOF"
+            echo "instruction<<${DELIM}"
             echo "${INSTRUCTION}"
-            echo "INSTRUCTION_EOF"
+            echo "${DELIM}"
           } >> "${GITHUB_OUTPUT}"
 
           # Count previous fix-agent commits on this PR to determine iteration.
@@ -178,25 +199,6 @@ jobs:
           echo "Fix iteration: ${ITERATION} (${FIX_COMMITS} previous fix commits)" >&2
           echo "iteration=${ITERATION}" >> "${GITHUB_OUTPUT}"
 
-      - name: Extract target repo name
-        id: repo-parts
-        env:
-          SOURCE_REPO: ${{ inputs.source_repo }}
-        run: echo "name=${SOURCE_REPO##*/}" >> "${GITHUB_OUTPUT}"
-
-      - name: Generate sandbox token (read-only)
-        id: sandbox-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.FULLSEND_CODER_CLIENT_ID }}
-          private-key: ${{ secrets.FULLSEND_CODER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ steps.repo-parts.outputs.name }}
-          permission-contents: read
-          permission-issues: read
-          permission-pull-requests: read
-          permission-metadata: read
-
       - name: Generate push token (write)
         id: push-token
         uses: actions/create-github-app-token@v3
@@ -205,6 +207,8 @@ jobs:
           private-key: ${{ secrets.FULLSEND_CODER_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ steps.repo-parts.outputs.name }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Checkout target repository at PR HEAD
         uses: actions/checkout@v6
@@ -230,6 +234,11 @@ jobs:
             > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
           BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
           echo "Pre-fetched review body: ${BYTE_COUNT} bytes"
+          MAX_REVIEW_BYTES=1048576  # 1 MB
+          if [[ "${BYTE_COUNT}" -gt "${MAX_REVIEW_BYTES}" ]]; then
+            echo "::error::Review body is ${BYTE_COUNT} bytes (max: ${MAX_REVIEW_BYTES})"
+            exit 1
+          fi
           if [[ "${TRIGGER_SOURCE}" == "bot" && "${BYTE_COUNT}" -le 1 ]]; then
             echo "::error::Bot-triggered run but review body is empty — nothing to fix"
             exit 1
