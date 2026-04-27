@@ -37,11 +37,32 @@ ISSUE_COUNT=$(jq 'length' "${BACKLOG_FILE}")
 echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
 
 # --- Fetch meeting notes from Google Drive ---
-ACCESS_TOKEN=$(gcloud auth print-access-token 2>/dev/null || echo "")
-if [[ -z "${ACCESS_TOKEN}" ]]; then
-  echo "ERROR: could not obtain GCP access token — is google-github-actions/auth configured?"
+# The Drive API is a Workspace API that requires its own OAuth scope
+# (drive.readonly). The default cloud-platform scope from gcloud doesn't
+# cover it. Mint a Drive-scoped token from the SA key directly, matching
+# what the Go implementation does with google.CredentialsFromJSON.
+SA_KEY_FILE="${GOOGLE_APPLICATION_CREDENTIALS:-}"
+if [[ -z "${SA_KEY_FILE}" || ! -f "${SA_KEY_FILE}" ]]; then
+  echo "ERROR: GOOGLE_APPLICATION_CREDENTIALS not set or file missing"
   exit 1
 fi
+
+ACCESS_TOKEN=$(python3 -c "
+from google.oauth2 import service_account
+import google.auth.transport.requests
+creds = service_account.Credentials.from_service_account_file(
+    '${SA_KEY_FILE}',
+    scopes=['https://www.googleapis.com/auth/drive.readonly']
+)
+creds.refresh(google.auth.transport.requests.Request())
+print(creds.token)
+" 2>/dev/null || echo "")
+
+if [[ -z "${ACCESS_TOKEN}" ]]; then
+  echo "ERROR: could not obtain Drive-scoped access token from SA key"
+  exit 1
+fi
+echo "Obtained Drive-scoped access token from SA credentials"
 
 ESCAPED_QUERY=$(printf '%s' "${SCRIBE_SEARCH_QUERY}" | sed "s/'/\\\\'/g")
 QUERY="name contains '${ESCAPED_QUERY}' and mimeType = 'application/vnd.google-apps.document' and createdTime > '${CUTOFF_DATE}'"
