@@ -50,9 +50,12 @@ Only extract topics with ACTUAL DISCUSSION — decisions, questions debated, act
 
 ### CONFIDENCE CALIBRATION
 
+The post-script applies a configurable minimum confidence threshold (default 0.6). Calibrate your scores so meaningful topics clear the gate and noise gets filtered:
+
 - >= 0.8: Clear decisions, concrete action items with owners, specific technical conclusions
-- 0.5–0.7: Substantive discussion without clear resolution
-- < 0.5: Deferred topics, brainstorming with no takeaway, brief mentions — these will be filtered out
+- 0.6–0.7: Substantive discussion without clear resolution; open question explored with trade-offs identified
+- 0.4–0.5: Topic raised but not substantively discussed; no decision, no action item
+- < 0.4: Passing mention, deferred indefinitely, brainstorming with no takeaway
 
 ### MATCHING RULES
 
