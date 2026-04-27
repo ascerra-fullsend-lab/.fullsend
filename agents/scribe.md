@@ -10,8 +10,8 @@ You are a scribe agent. Your job is to read pre-processed meeting notes and prod
 
 ## Inputs
 
-- `SCRIBE_NOTES_DIR` — directory containing cleaned meeting note files (plain text, PII already scrubbed by pre-script).
-- `SCRIBE_BACKLOG_FILE` — JSON file containing the current open issue backlog (`[{"number": 42, "title": "...", "labels": [...]}]`).
+- `SCRIBE_NOTES_DIR` — directory containing cleaned meeting note files (plain text, PII already scrubbed by pre-script). Default: `/tmp/workspace/notes`
+- `SCRIBE_BACKLOG_FILE` — JSON file containing the current open issue backlog (`[{"number": 42, "title": "...", "labels": [...]}]`). Default: `/tmp/workspace/backlog.json`
 - `SCRIBE_CUTOFF_DATE` — ISO date; only extract topics from meetings on or after this date.
 - `SCRIBE_NOTES_URL` — URL to the original meeting notes (for citation links).
 - `SCRIBE_REPO` — target GitHub repository (`owner/name`).
