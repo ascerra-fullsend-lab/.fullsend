@@ -26,6 +26,10 @@ agents:
     - role: review
       name: ascerra-fullsend-lab-review
       slug: ascerra-fullsend-lab-review
+    - role: scribe
+      name: ascerra-fullsend-lab-scribe
+      slug: ascerra-fullsend-lab-scribe
 repos:
     fix-agent-test:
         enabled: true
+
