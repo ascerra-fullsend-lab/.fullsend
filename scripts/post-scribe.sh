@@ -73,7 +73,7 @@ contains_sensitive() {
     | grep -qE '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b' \
     && return 0
   echo "${text}" \
-    | grep -qE '\b\d{3}-\d{2}-\d{4}\b' \
+    | grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' \
     && return 0
   return 1
 }
