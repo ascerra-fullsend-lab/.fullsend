@@ -42,9 +42,11 @@ echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
 # (drive.readonly). The default cloud-platform scope from gcloud doesn't
 # cover it. Mint a Drive-scoped token from the SA key using a signed JWT,
 # matching what the Go code does with google.CredentialsFromJSON.
-SA_KEY_FILE="${GOOGLE_APPLICATION_CREDENTIALS:-}"
+# SCRIBE_DRIVE_CREDENTIALS points to the SA key that has been invited to the
+# Google Calendar meeting (separate from the Vertex AI SA).
+SA_KEY_FILE="${SCRIBE_DRIVE_CREDENTIALS:-${GOOGLE_APPLICATION_CREDENTIALS:-}}"
 if [[ -z "${SA_KEY_FILE}" || ! -f "${SA_KEY_FILE}" ]]; then
-  echo "ERROR: GOOGLE_APPLICATION_CREDENTIALS not set or file missing"
+  echo "ERROR: neither SCRIBE_DRIVE_CREDENTIALS nor GOOGLE_APPLICATION_CREDENTIALS is set or file missing"
   exit 1
 fi
 
