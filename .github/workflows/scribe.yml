@@ -1,0 +1,89 @@
+name: Scribe
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview mode — no GitHub writes (ALWAYS use true during development)'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+      lookback_hours:
+        description: 'How far back to search for meeting notes'
+        required: false
+        default: '24'
+        type: string
+
+env:
+  SCRIBE_DRY_RUN_DEFAULT: 'true'
+
+concurrency:
+  group: fullsend-scribe
+  cancel-in-progress: true
+
+jobs:
+  scribe:
+    name: Scribe
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout .fullsend repository
+        uses: actions/checkout@v6
+
+      - name: Determine dry-run mode
+        id: config
+        run: |
+          echo "dry_run=true" >> "${GITHUB_OUTPUT}"
+          echo "lookback=${{ inputs.lookback_hours || '24' }}" >> "${GITHUB_OUTPUT}"
+          echo "::notice::SCRIBE DRY RUN MODE — no writes will be performed"
+
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FULLSEND_FULLSEND_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
+
+      - name: Mask GCP credential file paths
+        run: |
+          for var in GOOGLE_GHA_CREDS_PATH GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE; do
+            val="${!var:-}"
+            if [[ -n "${val}" ]]; then
+              echo "::add-mask::${val}"
+            fi
+          done
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: SCRIBE_
+          SCRIBE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SCRIBE_REPO: ${{ github.repository_owner }}/fix-agent-test
+          SCRIBE_SEARCH_QUERY: ${{ vars.SCRIBE_GDRIVE_SEARCH_QUERY }}
+          SCRIBE_NAME_FILTER: ${{ vars.SCRIBE_GDRIVE_NAME_FILTER || '' }}
+          SCRIBE_LOOKBACK_HOURS: ${{ steps.config.outputs.lookback }}
+          SCRIBE_DRY_RUN: 'true'
+          SCRIBE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          SCRIBE_CLOUD_ML_REGION: ${{ secrets.FULLSEND_GCP_REGION }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Install validation dependencies
+        run: pip install --quiet "jsonschema>=4.18.0"
+
+      - name: Run scribe agent
+        uses: ./.github/actions/fullsend
+        env:
+          SCRIBE_DRY_RUN: 'true'
+        with:
+          agent: scribe
