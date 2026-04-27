@@ -86,6 +86,8 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/target-repo"
           cd "${GITHUB_WORKSPACE}/target-repo"
           git init -q
+          git config user.email "scribe@fullsend.dev"
+          git config user.name "scribe"
           git commit --allow-empty -m "placeholder" -q
 
       - name: Run scribe agent
