@@ -56,10 +56,16 @@ fi
 # Security gate — deterministic checks on every topic
 # ============================================================
 
-MIN_CONFIDENCE=0.6
+MIN_CONFIDENCE="${SCRIBE_MIN_CONFIDENCE:-0.6}"
 MAX_COMMENT_LEN=2000
 MAX_BODY_LEN=15000
 MAX_TITLE_LEN=200
+
+if (( $(echo "${MIN_CONFIDENCE} < 0 || ${MIN_CONFIDENCE} > 1" | bc -l) )); then
+  echo "ERROR: SCRIBE_MIN_CONFIDENCE must be between 0.0 and 1.0 (got: ${MIN_CONFIDENCE})"
+  exit 1
+fi
+echo "Confidence threshold: ${MIN_CONFIDENCE}"
 REJECTED=0
 POSTED=0
 CREATED=0
