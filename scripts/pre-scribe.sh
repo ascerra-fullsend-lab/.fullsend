@@ -39,30 +39,38 @@ echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
 # --- Fetch meeting notes from Google Drive ---
 # The Drive API is a Workspace API that requires its own OAuth scope
 # (drive.readonly). The default cloud-platform scope from gcloud doesn't
-# cover it. Mint a Drive-scoped token from the SA key directly, matching
-# what the Go implementation does with google.CredentialsFromJSON.
+# cover it. Mint a Drive-scoped token from the SA key using a signed JWT,
+# matching what the Go code does with google.CredentialsFromJSON.
 SA_KEY_FILE="${GOOGLE_APPLICATION_CREDENTIALS:-}"
 if [[ -z "${SA_KEY_FILE}" || ! -f "${SA_KEY_FILE}" ]]; then
   echo "ERROR: GOOGLE_APPLICATION_CREDENTIALS not set or file missing"
   exit 1
 fi
 
-ACCESS_TOKEN=$(python3 -c "
-from google.oauth2 import service_account
-import google.auth.transport.requests
-creds = service_account.Credentials.from_service_account_file(
-    '${SA_KEY_FILE}',
-    scopes=['https://www.googleapis.com/auth/drive.readonly']
-)
-creds.refresh(google.auth.transport.requests.Request())
-print(creds.token)
-" 2>/dev/null || echo "")
+SA_EMAIL=$(jq -r '.client_email' "${SA_KEY_FILE}")
+SA_PRIVATE_KEY=$(jq -r '.private_key' "${SA_KEY_FILE}")
+NOW=$(date +%s)
+EXP=$((NOW + 3600))
 
+JWT_HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' | openssl base64 -e -A | tr '+/' '-_' | tr -d '=')
+JWT_CLAIMS=$(printf '{"iss":"%s","scope":"https://www.googleapis.com/auth/drive.readonly","aud":"https://oauth2.googleapis.com/token","exp":%d,"iat":%d}' \
+  "${SA_EMAIL}" "${EXP}" "${NOW}" | openssl base64 -e -A | tr '+/' '-_' | tr -d '=')
+JWT_SIGNATURE=$(printf '%s.%s' "${JWT_HEADER}" "${JWT_CLAIMS}" \
+  | openssl dgst -sha256 -sign <(printf '%s' "${SA_PRIVATE_KEY}") \
+  | openssl base64 -e -A | tr '+/' '-_' | tr -d '=')
+
+TOKEN_RESPONSE=$(curl -fsSL -X POST https://oauth2.googleapis.com/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${JWT_HEADER}.${JWT_CLAIMS}.${JWT_SIGNATURE}" \
+  2>&1)
+
+ACCESS_TOKEN=$(printf '%s' "${TOKEN_RESPONSE}" | jq -r '.access_token // empty')
 if [[ -z "${ACCESS_TOKEN}" ]]; then
-  echo "ERROR: could not obtain Drive-scoped access token from SA key"
+  echo "ERROR: could not obtain Drive-scoped access token"
+  echo "Token response: ${TOKEN_RESPONSE}"
   exit 1
 fi
-echo "Obtained Drive-scoped access token from SA credentials"
+echo "Obtained Drive-scoped access token for ${SA_EMAIL}"
 
 ESCAPED_QUERY=$(printf '%s' "${SCRIBE_SEARCH_QUERY}" | sed "s/'/\\\\'/g")
 QUERY="name contains '${ESCAPED_QUERY}' and mimeType = 'application/vnd.google-apps.document' and createdTime > '${CUTOFF_DATE}'"
