@@ -25,8 +25,9 @@ META_FILE="${WORK_DIR}/scribe-meta.json"
 mkdir -p "${NOTES_DIR}"
 
 LOOKBACK="${SCRIBE_LOOKBACK_HOURS:-3}"
-CUTOFF_DATE=$(date -u -d "${LOOKBACK} hours ago" +"%Y-%m-%dT%H:%M:%S" 2>/dev/null \
-  || date -u -v-"${LOOKBACK}"H +"%Y-%m-%dT%H:%M:%S")
+# RFC3339 with Z suffix — matches the Go code's time.RFC3339 format
+CUTOFF_DATE=$(date -u -d "${LOOKBACK} hours ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+  || date -u -v-"${LOOKBACK}"H +"%Y-%m-%dT%H:%M:%SZ")
 
 echo "Scribe pre-script: searching Drive for docs matching '${SCRIBE_SEARCH_QUERY}' since ${CUTOFF_DATE}"
 
@@ -36,7 +37,7 @@ gh issue list --repo "${SCRIBE_REPO}" --state open --json number,title,labels --
 ISSUE_COUNT=$(jq 'length' "${BACKLOG_FILE}")
 echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
 
-# --- Fetch meeting notes from Google Drive ---
+# --- Obtain Drive-scoped access token ---
 # The Drive API is a Workspace API that requires its own OAuth scope
 # (drive.readonly). The default cloud-platform scope from gcloud doesn't
 # cover it. Mint a Drive-scoped token from the SA key using a signed JWT,
@@ -72,23 +73,39 @@ if [[ -z "${ACCESS_TOKEN}" ]]; then
 fi
 echo "Obtained Drive-scoped access token for ${SA_EMAIL}"
 
+# --- Search Google Drive for meeting notes ---
 ESCAPED_QUERY=$(printf '%s' "${SCRIBE_SEARCH_QUERY}" | sed "s/'/\\\\'/g")
-QUERY="name contains '${ESCAPED_QUERY}' and mimeType = 'application/vnd.google-apps.document' and createdTime > '${CUTOFF_DATE}'"
+QUERY="name contains '${ESCAPED_QUERY}' and mimeType = 'application/vnd.google-apps.document' and trashed = false and createdTime > '${CUTOFF_DATE}'"
 
 if [[ -n "${SCRIBE_NAME_FILTER:-}" ]]; then
   ESCAPED_FILTER=$(printf '%s' "${SCRIBE_NAME_FILTER}" | sed "s/'/\\\\'/g")
   QUERY="${QUERY} and name contains '${ESCAPED_FILTER}'"
 fi
 
+echo "Drive query: ${QUERY}"
 ENCODED_QUERY=$(printf '%s' "${QUERY}" | jq -sRr @uri)
+DRIVE_URL="https://www.googleapis.com/drive/v3/files?q=${ENCODED_QUERY}&fields=files(id,name,createdTime,modifiedTime,webViewLink)&orderBy=createdTime+desc&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true"
 
-DRIVE_RESPONSE=$(curl -fsSL \
+# Do NOT use -f here — we want to see error responses from the API
+DRIVE_HTTP_CODE=$(curl -sS -o "${WORK_DIR}/drive-response.json" -w '%{http_code}' \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-  "https://www.googleapis.com/drive/v3/files?q=${ENCODED_QUERY}&fields=files(id,name,createdTime,webViewLink)&orderBy=createdTime+desc&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true" \
-  2>/dev/null || echo '{"files":[]}')
+  "${DRIVE_URL}")
 
-DOC_COUNT=$(echo "${DRIVE_RESPONSE}" | jq '.files | length')
+echo "Drive API HTTP status: ${DRIVE_HTTP_CODE}"
+
+if [[ "${DRIVE_HTTP_CODE}" != "200" ]]; then
+  echo "ERROR: Drive API returned non-200 status"
+  echo "Response body:"
+  cat "${WORK_DIR}/drive-response.json"
+  exit 1
+fi
+
+DOC_COUNT=$(jq '.files | length' "${WORK_DIR}/drive-response.json")
 echo "Found ${DOC_COUNT} matching document(s)"
+
+if [[ "${DOC_COUNT}" -gt 0 ]]; then
+  jq -r '.files[] | "  \(.name) (created: \(.createdTime), id: \(.id))"' "${WORK_DIR}/drive-response.json"
+fi
 
 if [[ "${DOC_COUNT}" -eq 0 ]]; then
   echo "No documents found — agent will produce empty result."
@@ -104,17 +121,17 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
 fi
 
 DOC_INDEX=0
-echo "${DRIVE_RESPONSE}" | jq -c '.files[]' | while read -r doc; do
+jq -c '.files[]' "${WORK_DIR}/drive-response.json" | while read -r doc; do
   DOC_ID=$(echo "${doc}" | jq -r '.id')
   DOC_NAME=$(echo "${doc}" | jq -r '.name')
   DOC_URL=$(echo "${doc}" | jq -r '.webViewLink')
 
   echo "  Downloading: ${DOC_NAME}"
 
-  RAW_TEXT=$(curl -fsSL \
+  RAW_TEXT=$(curl -sSL \
     -H "Authorization: Bearer ${ACCESS_TOKEN}" \
     "https://www.googleapis.com/drive/v3/files/${DOC_ID}/export?mimeType=text/plain" \
-    2>/dev/null || echo "")
+    2>&1 || echo "")
 
   if [[ -z "${RAW_TEXT}" ]]; then
     echo "  WARNING: could not export doc ${DOC_ID}, skipping"
