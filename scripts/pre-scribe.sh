@@ -142,13 +142,22 @@ jq -c '.files[]' "${WORK_DIR}/drive-response.json" | while read -r doc; do
   fi
 
   # --- Structural scrubbing (Gemini meeting notes format) ---
-  # Strip attendee/invite lines that list participant names.
-  # Gemini notes format: "Invited <Name1> <Name2> ..." near the top.
-  STRUCTURAL_SCRUB=$(echo "${RAW_TEXT}" \
+  # Gemini notes have: Summary (safe, uses "the team"/"participants"),
+  # Next steps (has [Person Name] attributions), and Details (near-verbatim
+  # transcript with extensive per-person attributions). The Details section
+  # is the primary leakage risk — it's essentially a private transcript
+  # with statements attributed to named individuals.
+  #
+  # Strategy: keep Summary + Next steps (with names stripped), drop Details
+  # and everything after it (transcript, timestamps, editor boilerplate).
+  STRUCTURAL_SCRUB=$(printf '%s' "${RAW_TEXT}" \
+    | tr -d '\r' \
     | sed -E '/^Invited /d' \
     | sed -E '/^Attendees:?/d' \
     | sed -E '/^Participants:?$/d' \
-    | sed -E 's/^(Organizer|Host|Co-host):?.*/[meeting role line removed]/g')
+    | sed -E 's/^(Organizer|Host|Co-host):?.*/[meeting role line removed]/g' \
+    | sed -n '/^Details/,$!p' \
+    | sed -E 's/\[[A-Z][a-zA-Z .,-]+\]/[attendee]/g')
 
   # --- PII pattern scrubbing ---
   SCRUBBED=$(echo "${STRUCTURAL_SCRUB}" \
