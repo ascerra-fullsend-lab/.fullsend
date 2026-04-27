@@ -91,6 +91,10 @@ runs:
         tar -xzf "/tmp/${ASSET_NAME}" -C "${RUNNER_TEMP}/fullsend"
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
+    - name: Print fullsend version
+      shell: bash
+      run: fullsend --version
+
     - name: Install OpenShell
       shell: bash
       run: |
@@ -115,4 +119,6 @@ runs:
       uses: actions/upload-artifact@v7
       with:
         name: fullsend-${{ inputs.agent }}
-        path: ${{ github.workspace }}/output
+        path: |
+          ${{ github.workspace }}/output
+          !${{ github.workspace }}/output/**/transcripts/**
