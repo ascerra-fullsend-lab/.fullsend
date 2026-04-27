@@ -30,6 +30,12 @@ CUTOFF_DATE=$(date -u -d "${LOOKBACK} hours ago" +"%Y-%m-%dT%H:%M:%S" 2>/dev/nul
 
 echo "Scribe pre-script: searching Drive for docs matching '${SCRIBE_SEARCH_QUERY}' since ${CUTOFF_DATE}"
 
+# --- Fetch the open issue backlog (always needed) ---
+echo "Fetching open issues from ${SCRIBE_REPO}..."
+gh issue list --repo "${SCRIBE_REPO}" --state open --json number,title,labels --limit 500 > "${BACKLOG_FILE}"
+ISSUE_COUNT=$(jq 'length' "${BACKLOG_FILE}")
+echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
+
 # --- Fetch meeting notes from Google Drive ---
 ACCESS_TOKEN=$(gcloud auth print-access-token 2>/dev/null || echo "")
 if [[ -z "${ACCESS_TOKEN}" ]]; then
@@ -45,17 +51,26 @@ if [[ -n "${SCRIBE_NAME_FILTER:-}" ]]; then
   QUERY="${QUERY} and name contains '${ESCAPED_FILTER}'"
 fi
 
+ENCODED_QUERY=$(printf '%s' "${QUERY}" | jq -sRr @uri)
+
 DRIVE_RESPONSE=$(curl -fsSL \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-  "https://www.googleapis.com/drive/v3/files?q=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${QUERY}'''))")&fields=files(id,name,createdTime,webViewLink)&orderBy=createdTime+desc&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true" \
+  "https://www.googleapis.com/drive/v3/files?q=${ENCODED_QUERY}&fields=files(id,name,createdTime,webViewLink)&orderBy=createdTime+desc&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true" \
   2>/dev/null || echo '{"files":[]}')
 
 DOC_COUNT=$(echo "${DRIVE_RESPONSE}" | jq '.files | length')
 echo "Found ${DOC_COUNT} matching document(s)"
 
 if [[ "${DOC_COUNT}" -eq 0 ]]; then
-  echo '{"notes_processed":0,"cutoff_date":"'"${CUTOFF_DATE}"'"}' > "${META_FILE}"
   echo "No documents found — agent will produce empty result."
+  jq -n \
+    --arg cutoff "${CUTOFF_DATE}" \
+    --arg repo "${SCRIBE_REPO}" \
+    --argjson doc_count 0 \
+    --argjson issue_count "${ISSUE_COUNT}" \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count}' \
+    > "${META_FILE}"
+  echo "Workspace: ${WORK_DIR}"
   exit 0
 fi
 
@@ -91,12 +106,6 @@ echo "${DRIVE_RESPONSE}" | jq -c '.files[]' | while read -r doc; do
 
   DOC_INDEX=$((DOC_INDEX + 1))
 done
-
-# --- Fetch the open issue backlog ---
-echo "Fetching open issues from ${SCRIBE_REPO}..."
-gh issue list --repo "${SCRIBE_REPO}" --state open --json number,title,labels --limit 500 > "${BACKLOG_FILE}"
-ISSUE_COUNT=$(jq 'length' "${BACKLOG_FILE}")
-echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
 
 NOTES_URL=""
 if [[ -f "${NOTES_DIR}/doc-0.url" ]]; then
