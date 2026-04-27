@@ -70,10 +70,11 @@ TOKEN_RESPONSE=$(curl -fsSL -X POST https://oauth2.googleapis.com/token \
 ACCESS_TOKEN=$(printf '%s' "${TOKEN_RESPONSE}" | jq -r '.access_token // empty')
 if [[ -z "${ACCESS_TOKEN}" ]]; then
   echo "ERROR: could not obtain Drive-scoped access token"
-  echo "Token response: ${TOKEN_RESPONSE}"
+  TOKEN_ERROR=$(printf '%s' "${TOKEN_RESPONSE}" | jq -r '.error // .error_description // "unknown error"' 2>/dev/null || echo "non-JSON response")
+  echo "Token error: ${TOKEN_ERROR}"
   exit 1
 fi
-echo "Obtained Drive-scoped access token for ${SA_EMAIL}"
+echo "Obtained Drive-scoped access token (SA: ${SA_EMAIL})"
 
 # --- Search Google Drive for meeting notes ---
 ESCAPED_QUERY=$(printf '%s' "${SCRIBE_SEARCH_QUERY}" | sed "s/'/\\\\'/g")
@@ -140,14 +141,25 @@ jq -c '.files[]' "${WORK_DIR}/drive-response.json" | while read -r doc; do
     continue
   fi
 
-  SCRUBBED=$(echo "${RAW_TEXT}" \
+  # --- Structural scrubbing (Gemini meeting notes format) ---
+  # Strip attendee/invite lines that list participant names.
+  # Gemini notes format: "Invited <Name1> <Name2> ..." near the top.
+  STRUCTURAL_SCRUB=$(echo "${RAW_TEXT}" \
+    | sed -E '/^Invited /d' \
+    | sed -E '/^Attendees:?/d' \
+    | sed -E '/^Participants:?$/d' \
+    | sed -E 's/^(Organizer|Host|Co-host):?.*/[meeting role line removed]/g')
+
+  # --- PII pattern scrubbing ---
+  SCRUBBED=$(echo "${STRUCTURAL_SCRUB}" \
     | sed -E 's/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/[REDACTED]/g' \
     | sed -E 's/\b(\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b/[REDACTED]/g' \
     | sed -E 's/\+\d{1,3}[-. ]?\d{4,14}\b/[REDACTED]/g' \
     | sed -E 's/\b\d{3}-\d{2}-\d{4}\b/[REDACTED]/g' \
+    | sed -E 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/[REDACTED]/g' \
     | sed -E 's/\b(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,255}\b/[REDACTED]/g' \
     | sed -E 's/\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/[REDACTED]/g' \
-    | sed -E 's/-----BEGIN[[:space:]]+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*-----END[[:space:]]+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/[REDACTED]/g')
+    | sed -E 's/-----BEGIN[[:space:]]+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/[REDACTED]/g')
 
   echo "${SCRUBBED}" > "${NOTES_DIR}/doc-${DOC_INDEX}.txt"
   echo "${DOC_URL}" > "${NOTES_DIR}/doc-${DOC_INDEX}.url"
