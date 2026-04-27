@@ -17,9 +17,10 @@
 
 set -euo pipefail
 
-NOTES_DIR="${FULLSEND_WORK_DIR}/notes"
-BACKLOG_FILE="${FULLSEND_WORK_DIR}/backlog.json"
-META_FILE="${FULLSEND_WORK_DIR}/scribe-meta.json"
+WORK_DIR="${RUNNER_TEMP:-/tmp}/scribe-workspace"
+NOTES_DIR="${WORK_DIR}/notes"
+BACKLOG_FILE="${WORK_DIR}/backlog.json"
+META_FILE="${WORK_DIR}/scribe-meta.json"
 
 mkdir -p "${NOTES_DIR}"
 
@@ -30,8 +31,6 @@ CUTOFF_DATE=$(date -u -d "${LOOKBACK} hours ago" +"%Y-%m-%dT%H:%M:%S" 2>/dev/nul
 echo "Scribe pre-script: searching Drive for docs matching '${SCRIBE_SEARCH_QUERY}' since ${CUTOFF_DATE}"
 
 # --- Fetch meeting notes from Google Drive ---
-# Use gcloud + curl to query the Drive API. The google-github-actions/auth
-# step in the workflow sets up Application Default Credentials.
 ACCESS_TOKEN=$(gcloud auth print-access-token 2>/dev/null || echo "")
 if [[ -z "${ACCESS_TOKEN}" ]]; then
   echo "ERROR: could not obtain GCP access token — is google-github-actions/auth configured?"
@@ -60,7 +59,6 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
   exit 0
 fi
 
-# Download and scrub each document
 DOC_INDEX=0
 echo "${DRIVE_RESPONSE}" | jq -c '.files[]' | while read -r doc; do
   DOC_ID=$(echo "${doc}" | jq -r '.id')
@@ -69,7 +67,6 @@ echo "${DRIVE_RESPONSE}" | jq -c '.files[]' | while read -r doc; do
 
   echo "  Downloading: ${DOC_NAME}"
 
-  # Export as plain text
   RAW_TEXT=$(curl -fsSL \
     -H "Authorization: Bearer ${ACCESS_TOKEN}" \
     "https://www.googleapis.com/drive/v3/files/${DOC_ID}/export?mimeType=text/plain" \
@@ -80,8 +77,6 @@ echo "${DRIVE_RESPONSE}" | jq -c '.files[]' | while read -r doc; do
     continue
   fi
 
-  # PII scrubbing — regex-based removal of emails, phone numbers, IPs,
-  # SSNs, API keys, tokens, and suspicious Unicode before the LLM sees it.
   SCRUBBED=$(echo "${RAW_TEXT}" \
     | sed -E 's/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/[REDACTED]/g' \
     | sed -E 's/\b(\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b/[REDACTED]/g' \
@@ -103,7 +98,6 @@ gh issue list --repo "${SCRIBE_REPO}" --state open --json number,title,labels --
 ISSUE_COUNT=$(jq 'length' "${BACKLOG_FILE}")
 echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
 
-# Write metadata for the agent
 NOTES_URL=""
 if [[ -f "${NOTES_DIR}/doc-0.url" ]]; then
   NOTES_URL=$(cat "${NOTES_DIR}/doc-0.url")
@@ -124,3 +118,4 @@ jq -n \
   }' > "${META_FILE}"
 
 echo "Pre-scribe complete. ${DOC_COUNT} docs scraped, ${ISSUE_COUNT} issues in backlog."
+echo "Workspace: ${WORK_DIR}"
