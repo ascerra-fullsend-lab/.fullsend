@@ -473,7 +473,7 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
 
   SLACK_TEXT+="\n\n<${RUN_URL}|View run>"
 
-  SLACK_PAYLOAD=$(jq -n --arg text "${SLACK_TEXT}" '{text: $text}')
+  SLACK_PAYLOAD=$(printf '%b' "${SLACK_TEXT}" | jq -Rs '{text: .}')
   if curl -fsSL -X POST -H 'Content-Type: application/json' \
       -d "${SLACK_PAYLOAD}" "${SLACK_WEBHOOK}" >/dev/null 2>&1; then
     echo "Slack notification sent"
