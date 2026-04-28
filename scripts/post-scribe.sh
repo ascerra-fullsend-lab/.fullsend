@@ -440,7 +440,7 @@ fi
 # ============================================================
 # Slack notification (optional — skip silently if no webhook)
 # ============================================================
-SLACK_WEBHOOK="${SCRIBE_SLACK_WEBHOOK_URL:-}"
+SLACK_WEBHOOK="${SCRIBE_SLACK_WEBHOOK_URL:-${SLACK_WEBHOOK_URL:-}}"
 if [[ -n "${SLACK_WEBHOOK}" ]]; then
   RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${SCRIBE_REPO}}/actions/runs/${GITHUB_RUN_ID:-0}"
 
