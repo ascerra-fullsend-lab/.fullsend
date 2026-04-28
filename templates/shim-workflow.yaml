@@ -11,6 +11,9 @@
 # titles, comment bodies, and PR descriptions.
 name: fullsend
 
+permissions:
+  contents: read
+
 on:
   issues:
     types: [labeled]
@@ -35,7 +38,8 @@ jobs:
           (github.event.comment.author_association != 'NONE' ||
             github.event.comment.user.login == github.event.issue.user.login) &&
           !endsWith(github.event.comment.user.login, '[bot]') &&
-          contains(toJSON(github.event.issue.labels.*.name), 'needs-info')
+          contains(toJSON(github.event.issue.labels.*.name), 'needs-info') &&
+          !contains(toJSON(github.event.issue.labels.*.name), 'type/feature')
         )
       )
     steps:
@@ -140,6 +144,7 @@ jobs:
     if: >-
       github.event_name == 'issue_comment'
         && github.event.issue.pull_request
+        && github.event.comment.user.type != 'Bot'
         && (
           github.event.comment.body == '/fix'
           || startsWith(github.event.comment.body, '/fix ')
@@ -150,6 +155,17 @@ jobs:
           || github.event.comment.author_association == 'COLLABORATOR'
         )
     steps:
+      - name: Block fork PRs
+        env:
+          GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
+        run: |
+          PR_URL="${{ github.event.issue.pull_request.url }}"
+          HEAD_REPO="$(gh api "${PR_URL}" --jq '.head.repo.full_name')"
+          BASE_REPO="$(gh api "${PR_URL}" --jq '.base.repo.full_name')"
+          if [ "${HEAD_REPO}" != "${BASE_REPO}" ]; then
+            echo "::error::Fix agent cannot run on fork PRs (${HEAD_REPO} != ${BASE_REPO})"
+            exit 1
+          fi
       - name: Dispatch fix (human-triggered)
         env:
           GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
