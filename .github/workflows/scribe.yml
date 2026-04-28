@@ -25,6 +25,15 @@ on:
         required: false
         default: '0.6'
         type: string
+      mode:
+        description: 'Agent mode: all (comments + new issues), comments_only, new_issues_only'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - 'comments_only'
+          - 'new_issues_only'
 
 # Scheduled runs ALWAYS use dry_run=true as a safety measure.
 # Change the env default below ONLY after thorough testing.
@@ -55,10 +64,12 @@ jobs:
             echo "dry_run=${SCRIBE_DRY_RUN_DEFAULT}" >> "${GITHUB_OUTPUT}"
             echo "lookback=3" >> "${GITHUB_OUTPUT}"
             echo "min_confidence=${{ vars.SCRIBE_MIN_CONFIDENCE || '0.6' }}" >> "${GITHUB_OUTPUT}"
+            echo "mode=${{ vars.SCRIBE_MODE || 'all' }}" >> "${GITHUB_OUTPUT}"
           else
             echo "dry_run=${{ inputs.dry_run || 'true' }}" >> "${GITHUB_OUTPUT}"
             echo "lookback=${{ inputs.lookback_hours || '3' }}" >> "${GITHUB_OUTPUT}"
             echo "min_confidence=${{ inputs.min_confidence || vars.SCRIBE_MIN_CONFIDENCE || '0.6' }}" >> "${GITHUB_OUTPUT}"
+            echo "mode=${{ inputs.mode || vars.SCRIBE_MODE || 'all' }}" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Safety check
@@ -101,6 +112,8 @@ jobs:
           SCRIBE_LOOKBACK_HOURS: ${{ steps.config.outputs.lookback }}
           SCRIBE_DRY_RUN: ${{ steps.config.outputs.dry_run }}
           SCRIBE_MIN_CONFIDENCE: ${{ steps.config.outputs.min_confidence }}
+          SCRIBE_MODE: ${{ steps.config.outputs.mode }}
+          SCRIBE_SLACK_WEBHOOK_URL: ${{ secrets.SCRIBE_SLACK_WEBHOOK_URL }}
           SCRIBE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           SCRIBE_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
         run: bash .github/scripts/setup-agent-env.sh
