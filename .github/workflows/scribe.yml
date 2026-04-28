@@ -88,6 +88,14 @@ jobs:
           private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
+      - name: Checkout target repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/${{ vars.SCRIBE_TARGET_REPO || github.event.repository.name }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 1
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
