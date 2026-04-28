@@ -178,6 +178,7 @@ fi
 COMMENT_TOPICS=()
 COMMENT_ISSUES=()
 NEW_ISSUE_TITLES=()
+NEW_ISSUE_URLS=()
 SKIPPED_NEW_ISSUES=0
 
 # ============================================================
@@ -352,19 +353,20 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
     echo "    [DRY RUN] Would create issue: ${TITLE}"
     echo "    [DRY RUN] Labels: ${LABELS}"
     echo "    [DRY RUN] Body length: ${BODY_LEN} chars"
+    NEW_ISSUE_URLS+=("")
   else
     # Label fallback: if labels don't exist in the target repo, retry without
-    if ! printf '%s' "${FULL_BODY}" | gh issue create \
+    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | gh issue create \
         --repo "${SCRIBE_REPO}" \
         --title "${TITLE}" \
         --label "${LABELS}" \
-        --body-file - 2>/dev/null; then
-      echo "    Labels may not exist in repo, retrying without labels..."
-      printf '%s' "${FULL_BODY}" | gh issue create \
+        --body-file - 2>/dev/null) || \
+    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | gh issue create \
         --repo "${SCRIBE_REPO}" \
         --title "${TITLE}" \
-        --body-file -
-    fi
+        --body-file -)
+    echo "    Created: ${ISSUE_URL}"
+    NEW_ISSUE_URLS+=("${ISSUE_URL}")
     CREATED=$((CREATED + 1))
   fi
 done
@@ -418,8 +420,12 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
 
   if [[ ${#NEW_ISSUE_TITLES[@]} -gt 0 ]]; then
     echo "**New issues ${DRY_RUN:+would be }filed:** ${#NEW_ISSUE_TITLES[@]}"
-    for title in "${!NEW_ISSUE_TITLES[@]}"; do
-      echo "- ${NEW_ISSUE_TITLES[$title]}"
+    for idx in "${!NEW_ISSUE_TITLES[@]}"; do
+      if [[ -n "${NEW_ISSUE_URLS[$idx]:-}" ]]; then
+        echo "- [${NEW_ISSUE_TITLES[$idx]}](${NEW_ISSUE_URLS[$idx]})"
+      else
+        echo "- ${NEW_ISSUE_TITLES[$idx]}"
+      fi
     done
     echo ""
   fi
@@ -468,7 +474,11 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   if [[ ${#NEW_ISSUE_TITLES[@]} -gt 0 ]]; then
     SLACK_TEXT+="\n\n*New issues:*"
     for idx in "${!NEW_ISSUE_TITLES[@]}"; do
-      SLACK_TEXT+="\n  • ${NEW_ISSUE_TITLES[$idx]}"
+      if [[ -n "${NEW_ISSUE_URLS[$idx]:-}" ]]; then
+        SLACK_TEXT+="\n  • <${NEW_ISSUE_URLS[$idx]}|${NEW_ISSUE_TITLES[$idx]}>"
+      else
+        SLACK_TEXT+="\n  • ${NEW_ISSUE_TITLES[$idx]}"
+      fi
     done
   fi
 
