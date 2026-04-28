@@ -101,6 +101,10 @@ runs:
         curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v0.0.30/install.sh | sh
         openshell --version
 
+    - name: Install validation dependencies
+      shell: bash
+      run: pip install --quiet "jsonschema>=4.18.0"
+
     - name: Run fullsend
       if: inputs.agent != '__install_only__'
       shell: bash
@@ -119,6 +123,4 @@ runs:
       uses: actions/upload-artifact@v7
       with:
         name: fullsend-${{ inputs.agent }}
-        path: |
-          ${{ github.workspace }}/output
-          !${{ github.workspace }}/output/**/transcripts/**
+        path: ${{ github.workspace }}/output
