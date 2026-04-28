@@ -120,7 +120,7 @@ contains_suspicious_unicode() {
   local text="$1"
   # Tag characters (U+E0000–E007F), zero-width chars, BOM, bidi overrides/isolates
   echo "${text}" \
-    | perl -CS -ne 'exit 0 if /[\x{E0000}-\x{E007F}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]/' \
+    | perl -e 'binmode(STDIN, q(:encoding(UTF-8))); while (<STDIN>) { if (/[\x{E0000}-\x{E007F}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]/) { exit 0 } } exit 1' \
     && return 0
   return 1
 }
