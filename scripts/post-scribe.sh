@@ -442,6 +442,7 @@ fi
 # ============================================================
 SLACK_WEBHOOK="${SCRIBE_SLACK_WEBHOOK_URL:-${SLACK_WEBHOOK_URL:-}}"
 if [[ -n "${SLACK_WEBHOOK}" ]]; then
+  echo "::add-mask::${SLACK_WEBHOOK}"
   RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${SCRIBE_REPO}}/actions/runs/${GITHUB_RUN_ID:-0}"
 
   SLACK_TEXT=":memo: *Scribe agent* (${RUN_MODE_LABEL})"
@@ -474,12 +475,14 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   SLACK_TEXT+="\n\n<${RUN_URL}|View run>"
 
   SLACK_PAYLOAD=$(printf '%b' "${SLACK_TEXT}" | jq -Rs '{text: .}')
-  if curl -fsSL -X POST -H 'Content-Type: application/json' \
-      -d "${SLACK_PAYLOAD}" "${SLACK_WEBHOOK}" >/dev/null 2>&1; then
+  if printf '%s' "${SLACK_PAYLOAD}" \
+      | curl -fsSL -X POST -H 'Content-Type: application/json' \
+        --data-binary @- "${SLACK_WEBHOOK}" >/dev/null 2>&1; then
     echo "Slack notification sent"
   else
     echo "WARNING: Slack notification failed (non-fatal)"
   fi
+  unset SLACK_WEBHOOK
 else
   echo "No SCRIBE_SLACK_WEBHOOK_URL set — skipping Slack notification"
 fi

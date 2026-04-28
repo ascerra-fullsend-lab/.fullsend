@@ -89,7 +89,7 @@ if [[ -z "${SA_KEY_FILE}" || ! -f "${SA_KEY_FILE}" ]]; then
 fi
 
 SA_EMAIL=$(jq -r '.client_email' "${SA_KEY_FILE}")
-SA_PRIVATE_KEY=$(jq -r '.private_key' "${SA_KEY_FILE}")
+echo "::add-mask::${SA_EMAIL}"
 NOW=$(date +%s)
 EXP=$((NOW + 3600))
 
@@ -97,22 +97,31 @@ JWT_HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' | openssl base64 -e -A | tr '+
 JWT_CLAIMS=$(printf '{"iss":"%s","scope":"https://www.googleapis.com/auth/drive.readonly","aud":"https://oauth2.googleapis.com/token","exp":%d,"iat":%d}' \
   "${SA_EMAIL}" "${EXP}" "${NOW}" | openssl base64 -e -A | tr '+/' '-_' | tr -d '=')
 JWT_SIGNATURE=$(printf '%s.%s' "${JWT_HEADER}" "${JWT_CLAIMS}" \
-  | openssl dgst -sha256 -sign <(printf '%s' "${SA_PRIVATE_KEY}") \
+  | openssl dgst -sha256 -sign <(jq -r '.private_key' "${SA_KEY_FILE}") \
   | openssl base64 -e -A | tr '+/' '-_' | tr -d '=')
 
-TOKEN_RESPONSE=$(curl -fsSL -X POST https://oauth2.googleapis.com/token \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${JWT_HEADER}.${JWT_CLAIMS}.${JWT_SIGNATURE}" \
-  2>&1)
+JWT_ASSERTION="${JWT_HEADER}.${JWT_CLAIMS}.${JWT_SIGNATURE}"
+echo "::add-mask::${JWT_ASSERTION}"
+
+TOKEN_RESPONSE=$(printf 'grant_type=urn%%3Aietf%%3Aparams%%3Aoauth%%3Agrant-type%%3Ajwt-bearer&assertion=%s' "${JWT_ASSERTION}" \
+  | curl -fsSL -X POST https://oauth2.googleapis.com/token \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-binary @- 2>/dev/null)
+TOKEN_CURL_RC=$?
+
+unset JWT_ASSERTION JWT_HEADER JWT_CLAIMS JWT_SIGNATURE
 
 ACCESS_TOKEN=$(printf '%s' "${TOKEN_RESPONSE}" | jq -r '.access_token // empty')
-if [[ -z "${ACCESS_TOKEN}" ]]; then
+if [[ ${TOKEN_CURL_RC} -ne 0 ]] || [[ -z "${ACCESS_TOKEN}" ]]; then
   echo "ERROR: could not obtain Drive-scoped access token"
   TOKEN_ERROR=$(printf '%s' "${TOKEN_RESPONSE}" | jq -r '.error // .error_description // "unknown error"' 2>/dev/null || echo "non-JSON response")
   echo "Token error: ${TOKEN_ERROR}"
+  unset TOKEN_RESPONSE
   exit 1
 fi
-echo "Obtained Drive-scoped access token (SA: ${SA_EMAIL})"
+echo "::add-mask::${ACCESS_TOKEN}"
+unset TOKEN_RESPONSE
+echo "Obtained Drive-scoped access token"
 
 # --- Search Google Drive for meeting notes ---
 ESCAPED_QUERY=$(printf '%s' "${SCRIBE_SEARCH_QUERY}" | sed "s/'/\\\\'/g")
@@ -145,11 +154,13 @@ DOC_COUNT=$(jq '.files | length' "${WORK_DIR}/drive-response.json")
 echo "Found ${DOC_COUNT} matching document(s)"
 
 if [[ "${DOC_COUNT}" -gt 0 ]]; then
-  jq -r '.files[] | "  \(.name) (created: \(.createdTime), id: \(.id))"' "${WORK_DIR}/drive-response.json"
+  jq -r '.files[] | "  \(.name) (created: \(.createdTime))"' "${WORK_DIR}/drive-response.json"
 fi
 
 if [[ "${DOC_COUNT}" -eq 0 ]]; then
   echo "No documents found — agent will produce empty result."
+  rm -f "${WORK_DIR}/drive-response.json"
+  unset ACCESS_TOKEN SA_EMAIL
   jq -n \
     --arg cutoff "${CUTOFF_DATE}" \
     --arg repo "${SCRIBE_REPO}" \
@@ -204,7 +215,7 @@ export_doc_with_retry() {
 
 DOC_INDEX=0
 DOCS_FAILED=0
-jq -c '.files[]' "${WORK_DIR}/drive-response.json" | while read -r doc; do
+while read -r doc; do
   DOC_ID=$(echo "${doc}" | jq -r '.id')
   DOC_NAME=$(echo "${doc}" | jq -r '.name')
   DOC_URL=$(echo "${doc}" | jq -r '.webViewLink')
@@ -263,7 +274,7 @@ jq -c '.files[]' "${WORK_DIR}/drive-response.json" | while read -r doc; do
   echo "${DOC_URL}" > "${NOTES_DIR}/doc-${DOC_INDEX}.url"
 
   DOC_INDEX=$((DOC_INDEX + 1))
-done
+done < <(jq -c '.files[]' "${WORK_DIR}/drive-response.json")
 
 if [[ "${DOCS_FAILED}" -gt 0 ]]; then
   echo "WARNING: ${DOCS_FAILED} doc(s) failed to export (continued with remaining)"
@@ -293,6 +304,10 @@ jq -n \
     open_prs: $pr_count,
     repo_docs: $doc_path_count
   }' > "${META_FILE}"
+
+# Cleanup: remove Drive API response (contains doc IDs and metadata)
+rm -f "${WORK_DIR}/drive-response.json" "${WORK_DIR}/doc-export-tmp"
+unset ACCESS_TOKEN SA_EMAIL
 
 echo "Pre-scribe complete. ${DOC_COUNT} docs scraped, ${ISSUE_COUNT} issues + ${CLOSED_COUNT} closed + ${PR_COUNT} PRs + ${DOC_PATH_COUNT} doc paths."
 echo "Workspace: ${WORK_DIR}"
