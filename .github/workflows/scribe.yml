@@ -85,7 +85,7 @@ jobs:
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.FULLSEND_SCRIBE_CLIENT_ID }}
-          private-key: ${{ secrets.FULLSEND_SCRIBE_APP_PRIVATE_KEY }}
+          private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
       - name: Resolve target repository
@@ -103,7 +103,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: ${{ steps.target.outputs.repo }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ github.token }}
           path: target-repo
           fetch-depth: 1
 
