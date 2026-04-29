@@ -84,14 +84,25 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          client-id: ${{ vars.FULLSEND_FULLSEND_CLIENT_ID }}
-          private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.FULLSEND_SCRIBE_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_SCRIBE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+
+      - name: Resolve target repository
+        id: target
+        run: |
+          TARGET="${{ vars.SCRIBE_TARGET_REPO }}"
+          if [[ -z "${TARGET}" ]]; then
+            TARGET="${{ github.repository_owner }}/${{ github.event.repository.name }}"
+          elif [[ "${TARGET}" != */* ]]; then
+            TARGET="${{ github.repository_owner }}/${TARGET}"
+          fi
+          echo "repo=${TARGET}" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout target repository
         uses: actions/checkout@v6
         with:
-          repository: ${{ github.repository_owner }}/${{ vars.SCRIBE_TARGET_REPO || github.event.repository.name }}
+          repository: ${{ steps.target.outputs.repo }}
           token: ${{ steps.app-token.outputs.token }}
           path: target-repo
           fetch-depth: 1
@@ -123,7 +134,7 @@ jobs:
         env:
           AGENT_PREFIX: SCRIBE_
           SCRIBE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          SCRIBE_REPO: ${{ github.repository_owner }}/${{ vars.SCRIBE_TARGET_REPO || github.event.repository.name }}
+          SCRIBE_REPO: ${{ steps.target.outputs.repo }}
           SCRIBE_SEARCH_QUERY: ${{ vars.SCRIBE_GDRIVE_SEARCH_QUERY }}
           SCRIBE_NAME_FILTER: ${{ vars.SCRIBE_GDRIVE_NAME_FILTER || '' }}
           SCRIBE_LOOKBACK_HOURS: ${{ steps.config.outputs.lookback }}
