@@ -130,7 +130,7 @@ Write a JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json` containing a singl
   "topics": [
     {
       "topic": "Short topic title",
-      "summary": "What was discussed. [Meeting notes](URL)",
+      "summary": "**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** ...\n\n- Decision point 1\n- Decision point 2\n\n**Next steps:** ...\n\n[Meeting notes](URL)",
       "existing_issue": 42,
       "new_issue_title": null,
       "confidence": 0.85,
@@ -190,3 +190,5 @@ Approaches that emerged, with trade-offs. Present as technical options, not who-
 - Do NOT post comments, create issues, or modify anything on GitHub. The post-script handles all mutations.
 - NEVER include names of meeting participants in any output.
 - Keep comment summaries under 2000 characters. Keep new issue bodies under 15000 characters.
+- The schema has NO `comment` field. For topics with `existing_issue`, put the FULL formatted comment (per the comment format section) directly into `summary`. The post-script posts `summary` as the issue comment body.
+- Only use properties defined in the example above. No extra fields — `additionalProperties: false` is enforced.
