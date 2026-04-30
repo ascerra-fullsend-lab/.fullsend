@@ -89,16 +89,18 @@ case "${CLASSIFY_MODE}" in
     fi
 
     # Page through ALL project items (100 per page).
+    # Timeout each GraphQL call at 15s to avoid hanging on cross-org tokens.
     ALL_PROJECT_ITEMS="[]"
     HAS_NEXT="true"
     END_CURSOR=""
+    PROJECT_ACCESS_OK="true"
     while [[ "${HAS_NEXT}" == "true" ]]; do
       CURSOR_ARG=""
       if [[ -n "${END_CURSOR}" ]]; then
         CURSOR_ARG="-f afterCursor=${END_CURSOR}"
       fi
 
-      PAGE=$(gh api graphql -f query='
+      PAGE=$(timeout 15 gh api graphql -f query='
         query($org: String!, $num: Int!, $fieldName: String!, $afterCursor: String) {
           organization(login: $org) {
             projectV2(number: $num) {
@@ -121,7 +123,17 @@ case "${CLASSIFY_MODE}" in
             }
           }
         }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" \
-           ${CURSOR_ARG:+"${CURSOR_ARG}"} 2>/dev/null || echo '{}')
+           ${CURSOR_ARG:+"${CURSOR_ARG}"} 2>/dev/null) || {
+        echo "⚠ Could not query project items (timeout or access denied)"
+        PROJECT_ACCESS_OK="false"
+        break
+      }
+
+      if [[ -z "${PAGE}" ]] || ! echo "${PAGE}" | jq -e '.data.organization.projectV2.items' >/dev/null 2>&1; then
+        echo "⚠ Project query returned no data — treating all issues as unclassified"
+        PROJECT_ACCESS_OK="false"
+        break
+      fi
 
       PAGE_NODES=$(echo "${PAGE}" | jq -c '.data.organization.projectV2.items.nodes // []')
       ALL_PROJECT_ITEMS=$(echo "${ALL_PROJECT_ITEMS}" "${PAGE_NODES}" | jq -sc '.[0] + .[1]')
@@ -129,22 +141,27 @@ case "${CLASSIFY_MODE}" in
       END_CURSOR=$(echo "${PAGE}" | jq -r '.data.organization.projectV2.items.pageInfo.endCursor // empty')
     done
 
-    PROJECT_ITEMS="${ALL_PROJECT_ITEMS}"
+    if [[ "${PROJECT_ACCESS_OK}" == "true" ]]; then
+      PROJECT_ITEMS="${ALL_PROJECT_ITEMS}"
+      CLASSIFIED_NUMBERS=$(printf '%s' "${PROJECT_ITEMS}" | jq -r --arg repo "${CLASSIFY_SOURCE_REPO}" '
+        .[]
+        | select(.content.repository.nameWithOwner == $repo)
+        | select(.fieldValueByName.name != null and .fieldValueByName.name != "")
+        | .content.number' 2>/dev/null | sort -n || true)
 
-    CLASSIFIED_NUMBERS=$(printf '%s' "${PROJECT_ITEMS}" | jq -r --arg repo "${CLASSIFY_SOURCE_REPO}" '
-      .[]
-      | select(.content.repository.nameWithOwner == $repo)
-      | select(.fieldValueByName.name != null and .fieldValueByName.name != "")
-      | .content.number' 2>/dev/null | sort -n || true)
+      while IFS= read -r num; do
+        if [[ -n "${num}" ]] && ! printf '%s\n' "${CLASSIFIED_NUMBERS}" | grep -qx "${num}"; then
+          echo "${num}"
+        fi
+      done <<< "${ALL_ISSUE_NUMBERS}" > "${ISSUE_NUMBERS_FILE}"
 
-    while IFS= read -r num; do
-      if [[ -n "${num}" ]] && ! printf '%s\n' "${CLASSIFIED_NUMBERS}" | grep -qx "${num}"; then
-        echo "${num}"
-      fi
-    done <<< "${ALL_ISSUE_NUMBERS}" > "${ISSUE_NUMBERS_FILE}"
-
-    UNCLASSIFIED_COUNT=$(wc -l < "${ISSUE_NUMBERS_FILE}" | tr -d ' ')
-    echo "✓ Found ${UNCLASSIFIED_COUNT} unclassified issues"
+      UNCLASSIFIED_COUNT=$(wc -l < "${ISSUE_NUMBERS_FILE}" | tr -d ' ')
+      echo "✓ Found ${UNCLASSIFIED_COUNT} unclassified issues"
+    else
+      echo "${ALL_ISSUE_NUMBERS}" > "${ISSUE_NUMBERS_FILE}"
+      TOTAL_COUNT=$(wc -l < "${ISSUE_NUMBERS_FILE}" | tr -d ' ')
+      echo "✓ Treating all ${TOTAL_COUNT} open issues as unclassified (no project access)"
+    fi
     ;;
 
   all)
