@@ -20,6 +20,23 @@
 
 set -euo pipefail
 
+# Run a command with a hard-kill timeout. Writes stdout to a file.
+# Usage: _run_with_timeout <seconds> <output_file> <command...>
+# Returns the command's exit code, or 137 on timeout.
+_run_with_timeout() {
+  local secs=$1 outfile=$2
+  shift 2
+  "$@" > "${outfile}" 2>/dev/null &
+  local cmd_pid=$!
+  ( sleep "${secs}" && kill -9 "${cmd_pid}" 2>/dev/null ) &
+  local wd_pid=$!
+  local rc=0
+  wait "${cmd_pid}" 2>/dev/null || rc=$?
+  kill "${wd_pid}" 2>/dev/null || true
+  wait "${wd_pid}" 2>/dev/null || true
+  return "${rc}"
+}
+
 CONTEXT_DIR="/tmp/workspace/context"
 mkdir -p "${CONTEXT_DIR}"
 
@@ -89,18 +106,20 @@ case "${CLASSIFY_MODE}" in
     fi
 
     # Page through ALL project items (100 per page).
-    # Timeout each GraphQL call at 15s to avoid hanging on cross-org tokens.
+    # Uses background-job + watchdog to hard-kill gh if it hangs (cross-org tokens).
     ALL_PROJECT_ITEMS="[]"
     HAS_NEXT="true"
     END_CURSOR=""
     PROJECT_ACCESS_OK="true"
+    GH_TMPFILE=$(mktemp)
     while [[ "${HAS_NEXT}" == "true" ]]; do
       CURSOR_ARG=""
       if [[ -n "${END_CURSOR}" ]]; then
         CURSOR_ARG="-f afterCursor=${END_CURSOR}"
       fi
 
-      PAGE=$(timeout -k 5 15 gh api graphql -f query='
+      if ! _run_with_timeout 15 "${GH_TMPFILE}" \
+           gh api graphql -f query='
         query($org: String!, $num: Int!, $fieldName: String!, $afterCursor: String) {
           organization(login: $org) {
             projectV2(number: $num) {
@@ -123,12 +142,13 @@ case "${CLASSIFY_MODE}" in
             }
           }
         }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" \
-           ${CURSOR_ARG:+"${CURSOR_ARG}"} 2>/dev/null) || {
+           ${CURSOR_ARG:+"${CURSOR_ARG}"}; then
         echo "⚠ Could not query project items (timeout or access denied)"
         PROJECT_ACCESS_OK="false"
         break
-      }
+      fi
 
+      PAGE=$(cat "${GH_TMPFILE}")
       if [[ -z "${PAGE}" ]] || ! echo "${PAGE}" | jq -e '.data.organization.projectV2.items' >/dev/null 2>&1; then
         echo "⚠ Project query returned no data — treating all issues as unclassified"
         PROJECT_ACCESS_OK="false"
@@ -140,6 +160,7 @@ case "${CLASSIFY_MODE}" in
       HAS_NEXT=$(echo "${PAGE}" | jq -r '.data.organization.projectV2.items.pageInfo.hasNextPage // false')
       END_CURSOR=$(echo "${PAGE}" | jq -r '.data.organization.projectV2.items.pageInfo.endCursor // empty')
     done
+    rm -f "${GH_TMPFILE}"
 
     if [[ "${PROJECT_ACCESS_OK}" == "true" ]]; then
       PROJECT_ITEMS="${ALL_PROJECT_ITEMS}"
@@ -187,7 +208,9 @@ if [[ ! "${FIELD_NAME}" =~ ^[a-zA-Z0-9\ ,._-]+$ ]]; then
   exit 1
 fi
 
-PROJECT_META=$(timeout -k 5 15 gh api graphql -f query='
+META_TMPFILE=$(mktemp)
+_run_with_timeout 15 "${META_TMPFILE}" \
+  gh api graphql -f query='
   query($org: String!, $num: Int!, $fieldName: String!) {
     organization(login: $org) {
       projectV2(number: $num) {
@@ -203,7 +226,10 @@ PROJECT_META=$(timeout -k 5 15 gh api graphql -f query='
         }
       }
     }
-  }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" 2>/dev/null || echo '{}')
+  }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" || true
+PROJECT_META=$(cat "${META_TMPFILE}" 2>/dev/null || echo '{}')
+rm -f "${META_TMPFILE}"
+if [[ -z "${PROJECT_META}" ]]; then PROJECT_META='{}'; fi
 
 # Write only the structural metadata the post-script needs.
 # Project/field/option IDs are not secrets (discoverable via public API).
