@@ -69,11 +69,37 @@ fi
 
 REPO="${CLASSIFY_SOURCE_REPO}"
 
-TOTAL=$(jq '.issues | length' "${RESULT_FILE}")
+# Load issue titles from the pre-script's open-issues.json for display.
+# Pre-compute a TSV lookup file (number<TAB>title) to avoid running jq per issue.
+ISSUES_FILE="${CONTEXT_DIR}/open-issues.json"
+TITLES_FILE="/tmp/workspace/issue-titles.tsv"
+if [[ -f "${ISSUES_FILE}" ]]; then
+  jq -r '.[] | "\(.number)\t\(.title[:60])"' "${ISSUES_FILE}" > "${TITLES_FILE}" 2>/dev/null || true
+else
+  touch "${TITLES_FILE}"
+fi
+
+lookup_title() {
+  local num="$1"
+  awk -F'\t' -v n="${num}" '$1 == n { print $2; exit }' "${TITLES_FILE}"
+}
+
+AGENT_EVALUATED=$(jq '.issues | length' "${RESULT_FILE}")
 CLASSIFIED=0
 SKIPPED=0
 LABELED=0
 ERRORS=0
+NOT_EVALUATED=0
+
+# Build a set of issue numbers the agent evaluated for fast lookup.
+AGENT_ISSUE_NUMS=$(jq -r '.issues[].issue_number' "${RESULT_FILE}" | sort -n)
+
+# Count total open issues from the pre-script's list.
+if [[ -f "${ISSUES_FILE}" ]]; then
+  ALL_OPEN_COUNT=$(jq length "${ISSUES_FILE}")
+else
+  ALL_OPEN_COUNT="${AGENT_EVALUATED}"
+fi
 
 # Prepare the report array (built incrementally).
 REPORT_FILE="/tmp/workspace/classify-report.json"
@@ -88,7 +114,7 @@ else
 fi
 echo "╠══════════════════════════════════════════════════════════════╣"
 echo "║  Repo:       ${REPO}"
-echo "║  Issues:     ${TOTAL}"
+echo "║  Open issues: ${ALL_OPEN_COUNT} (agent evaluated ${AGENT_EVALUATED})"
 echo "║  Threshold:  ${MIN_CONFIDENCE}"
 if [[ -n "${FILTER_CATEGORY}" ]]; then
   echo "║  Filter:     ${FILTER_CATEGORY}"
@@ -154,22 +180,43 @@ set_project_field() {
     --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null || true)
 
   if [[ -z "${item_id}" ]]; then
-    # Fallback: item may already exist. Query for it.
-    item_id=$(gh api graphql -f query='
-      query($projectId: ID!, $contentId: ID!) {
-        node(id: $projectId) {
-          ... on ProjectV2 {
-            items(first: 100) {
-              nodes {
-                id
-                content { ... on Issue { id } }
+    # Fallback: item may already exist. Page through project items to find it.
+    local cursor=""
+    while true; do
+      local cursor_arg=""
+      if [[ -n "${cursor}" ]]; then
+        cursor_arg="-f afterCursor=${cursor}"
+      fi
+      local page_result
+      page_result=$(gh api graphql -f query='
+        query($projectId: ID!, $afterCursor: String) {
+          node(id: $projectId) {
+            ... on ProjectV2 {
+              items(first: 100, after: $afterCursor) {
+                nodes {
+                  id
+                  content { ... on Issue { id } }
+                }
+                pageInfo { hasNextPage endCursor }
               }
             }
           }
-        }
-      }' -f projectId="${PROJECT_ID}" \
-      -f contentId="${content_id}" \
-      --jq ".data.node.items.nodes[] | select(.content.id == \"${content_id}\") | .id" 2>/dev/null || true)
+        }' -f projectId="${PROJECT_ID}" \
+        ${cursor_arg:+"${cursor_arg}"} 2>/dev/null || echo '{}')
+
+      item_id=$(printf '%s' "${page_result}" | jq -r --arg cid "${content_id}" \
+        '.data.node.items.nodes[]? | select(.content.id == $cid) | .id' 2>/dev/null || true)
+      if [[ -n "${item_id}" ]]; then
+        break
+      fi
+
+      local has_next
+      has_next=$(printf '%s' "${page_result}" | jq -r '.data.node.items.pageInfo.hasNextPage // false')
+      if [[ "${has_next}" != "true" ]]; then
+        break
+      fi
+      cursor=$(printf '%s' "${page_result}" | jq -r '.data.node.items.pageInfo.endCursor // empty')
+    done
   fi
 
   if [[ -z "${item_id}" ]]; then
@@ -198,8 +245,10 @@ set_project_field() {
   return 0
 }
 
-# Process each classification.
-for i in $(seq 0 $((TOTAL - 1))); do
+# --- Section 1: Agent-evaluated issues ---
+echo "── Agent-evaluated issues (${AGENT_EVALUATED}) ──"
+echo ""
+for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   ISSUE_NUM=$(jq -r ".issues[${i}].issue_number" "${RESULT_FILE}")
   CATEGORY=$(jq -r ".issues[${i}].workstream_category // empty" "${RESULT_FILE}")
   IS_CONTRIBUTOR=$(jq -r ".issues[${i}].is_contributor_issue" "${RESULT_FILE}")
@@ -238,14 +287,15 @@ for i in $(seq 0 $((TOTAL - 1))); do
   if [[ -n "${CATEGORY}" && "${CATEGORY}" != "null" ]]; then
     PASSES_THRESHOLD=$(printf '%s >= %s\n' "${CONFIDENCE}" "${MIN_CONFIDENCE}" | bc -l 2>/dev/null || echo "0")
     if [[ "${PASSES_THRESHOLD}" == "1" ]]; then
-      if set_project_field "${ISSUE_NUM}" "${CATEGORY}"; then
+      if [[ "${DRY_RUN}" == "true" ]]; then
         ((CLASSIFIED++)) || true
         ISSUE_STATUS="classified"
-        if [[ "${DRY_RUN}" == "true" ]]; then
-          CATEGORY_ACTION="would-set"
-        else
-          CATEGORY_ACTION="set"
-        fi
+        CATEGORY_ACTION="would-set"
+        ACTIONS_TAKEN="${ACTIONS_TAKEN:+${ACTIONS_TAKEN}, }category:${CATEGORY}"
+      elif set_project_field "${ISSUE_NUM}" "${CATEGORY}"; then
+        ((CLASSIFIED++)) || true
+        ISSUE_STATUS="classified"
+        CATEGORY_ACTION="set"
         ACTIONS_TAKEN="${ACTIONS_TAKEN:+${ACTIONS_TAKEN}, }category:${CATEGORY}"
       else
         ((ERRORS++)) || true
@@ -270,13 +320,18 @@ for i in $(seq 0 $((TOTAL - 1))); do
 
   CONTRIB_TAG=""
   if [[ "${IS_CONTRIBUTOR}" == "true" ]]; then
-    CONTRIB_TAG="contributor"
+    CONTRIB_TAG="[contributor]"
   fi
+
+  ISSUE_TITLE=$(lookup_title "${ISSUE_NUM}")
 
   printf '%s #%-5s  %-10s  %-40s  conf=%.2f  %s\n' \
     "${PREFIX}" "${ISSUE_NUM}" "${ISSUE_STATUS}" \
     "${CATEGORY:-<none>}" "${CONFIDENCE}" \
     "${CONTRIB_TAG}"
+  if [[ -n "${ISSUE_TITLE}" ]]; then
+    printf '         └─ %s\n' "${ISSUE_TITLE}"
+  fi
 
   # Truncate reasoning for the report (no issue body content).
   SAFE_REASONING=$(printf '%s' "${REASONING}" | head -c 500)
@@ -302,13 +357,41 @@ for i in $(seq 0 $((TOTAL - 1))); do
     }]' "${REPORT_FILE}" > "${REPORT_FILE}.tmp" && mv "${REPORT_FILE}.tmp" "${REPORT_FILE}"
 done
 
+# --- Section 2: Issues the agent screened out ---
+# The agent only outputs candidates it evaluated in detail. Issues not in the
+# agent output were screened out by title/labels as not matching. List them so
+# the user sees all open issues accounted for.
+if [[ -f "${ISSUES_FILE}" ]]; then
+  NOT_EVALUATED_NUMS=()
+  while IFS= read -r num; do
+    if ! printf '%s\n' ${AGENT_ISSUE_NUMS} | grep -qx "${num}"; then
+      NOT_EVALUATED_NUMS+=("${num}")
+    fi
+  done < <(jq -r '.[].number' "${ISSUES_FILE}")
+  NOT_EVALUATED=${#NOT_EVALUATED_NUMS[@]}
+
+  if [[ ${NOT_EVALUATED} -gt 0 ]]; then
+    echo ""
+    echo "── Screened out by title/labels (${NOT_EVALUATED}) ──"
+    echo ""
+    for num in "${NOT_EVALUATED_NUMS[@]}"; do
+      TITLE=$(lookup_title "${num}")
+      printf '         #%-5s  %s\n' "${num}" "${TITLE}"
+    done
+  fi
+fi
+
+TOTAL_ALL=$((AGENT_EVALUATED + NOT_EVALUATED))
+
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║  SUMMARY                                                    ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
-printf '║  Total processed:     %-5s                                 ║\n' "${TOTAL}"
+printf '║  Total open issues:   %-5s                                 ║\n' "${ALL_OPEN_COUNT}"
+printf '║  Agent evaluated:     %-5s                                 ║\n' "${AGENT_EVALUATED}"
+printf '║  Screened out:        %-5s                                 ║\n' "${NOT_EVALUATED}"
 printf '║  Classified:          %-5s                                 ║\n' "${CLASSIFIED}"
-printf '║  Skipped:             %-5s                                 ║\n' "${SKIPPED}"
+printf '║  Skipped (low conf):  %-5s                                 ║\n' "${SKIPPED}"
 printf '║  Contributor labels:  %-5s                                 ║\n' "${LABELED}"
 printf '║  Errors:              %-5s                                 ║\n' "${ERRORS}"
 if [[ "${DRY_RUN}" == "true" ]]; then
@@ -341,9 +424,11 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     fi
     echo "| Metric | Count |"
     echo "|--------|------:|"
-    echo "| Issues processed | ${TOTAL} |"
+    echo "| Total open issues | ${ALL_OPEN_COUNT} |"
+    echo "| Agent evaluated | ${AGENT_EVALUATED} |"
+    echo "| Screened out | ${NOT_EVALUATED} |"
     echo "| Classified | ${CLASSIFIED} |"
-    echo "| Skipped | ${SKIPPED} |"
+    echo "| Skipped (low conf) | ${SKIPPED} |"
     echo "| Contributor labels | ${LABELED} |"
     echo "| Errors | ${ERRORS} |"
     echo ""
