@@ -74,7 +74,7 @@ REPO="${CLASSIFY_SOURCE_REPO}"
 ISSUES_FILE="${CONTEXT_DIR}/open-issues.json"
 TITLES_FILE="/tmp/workspace/issue-titles.tsv"
 if [[ -f "${ISSUES_FILE}" ]]; then
-  jq -r '.[] | "\(.number)\t\(.title[:60])"' "${ISSUES_FILE}" > "${TITLES_FILE}" 2>/dev/null || true
+  jq -r '.[] | "\(.number)\t\(.title[:80])"' "${ISSUES_FILE}" > "${TITLES_FILE}" 2>/dev/null || true
 else
   touch "${TITLES_FILE}"
 fi
@@ -106,20 +106,20 @@ REPORT_FILE="/tmp/workspace/classify-report.json"
 echo '[]' > "${REPORT_FILE}"
 
 echo ""
-echo "╔══════════════════════════════════════════════════════════════╗"
+echo "============================================================"
 if [[ "${DRY_RUN}" == "true" ]]; then
-  echo "║  CLASSIFY AGENT — DRY RUN (no changes will be applied)     ║"
+  echo "  CLASSIFY AGENT -- DRY RUN"
 else
-  echo "║  CLASSIFY AGENT — LIVE RUN                                 ║"
+  echo "  CLASSIFY AGENT -- LIVE RUN"
 fi
-echo "╠══════════════════════════════════════════════════════════════╣"
-echo "║  Repo:       ${REPO}"
-echo "║  Open issues: ${ALL_OPEN_COUNT} (agent evaluated ${AGENT_EVALUATED})"
-echo "║  Threshold:  ${MIN_CONFIDENCE}"
+echo "============================================================"
+printf '  Repository:   %s\n' "${REPO}"
+THRESHOLD_PCT=$(printf '%.0f' "$(echo "${MIN_CONFIDENCE} * 100" | bc -l)")
+printf '  Threshold:    %s%%\n' "${THRESHOLD_PCT}"
 if [[ -n "${FILTER_CATEGORY}" ]]; then
-  echo "║  Filter:     ${FILTER_CATEGORY}"
+  printf '  Filter:       %s\n' "${FILTER_CATEGORY}"
 fi
-echo "╚══════════════════════════════════════════════════════════════╝"
+echo "------------------------------------------------------------"
 echo ""
 
 add_label() {
@@ -245,9 +245,10 @@ set_project_field() {
   return 0
 }
 
-# --- Section 1: Agent-evaluated issues ---
-echo "── Agent-evaluated issues (${AGENT_EVALUATED}) ──"
-echo ""
+# --- Process all agent-evaluated issues (build arrays for display later) ---
+CLASSIFIED_LINES=()
+SKIPPED_LINES=()
+
 for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   ISSUE_NUM=$(jq -r ".issues[${i}].issue_number" "${RESULT_FILE}")
   CATEGORY=$(jq -r ".issues[${i}].workstream_category // empty" "${RESULT_FILE}")
@@ -255,7 +256,6 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   CONFIDENCE=$(jq -r ".issues[${i}].confidence" "${RESULT_FILE}")
   REASONING=$(jq -r ".issues[${i}].reasoning" "${RESULT_FILE}")
 
-  # Per-issue action tracking for the report.
   ACTIONS_TAKEN=""
   ISSUE_STATUS="skipped"
 
@@ -263,7 +263,6 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   # Cross-repo writes are impossible — GitHub returns 404 for issue numbers
   # that don't exist in the target repo.
 
-  # --- Contributor label ---
   LABEL_ACTION="none"
   if [[ "${IS_CONTRIBUTOR}" == "true" ]]; then
     if add_label "${ISSUE_NUM}" "contributor"; then
@@ -277,7 +276,6 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
     fi
   fi
 
-  # --- Workstream category ---
   # Safety net: if filter is active and agent returned a non-matching category, treat as null.
   if [[ -n "${FILTER_CATEGORY}" && -n "${CATEGORY}" && "${CATEGORY}" != "null" && "${CATEGORY}" != "${FILTER_CATEGORY}" ]]; then
     CATEGORY=""
@@ -311,32 +309,24 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
     CATEGORY_ACTION="unclassifiable"
   fi
 
-  # --- Print per-issue line ---
-  if [[ "${DRY_RUN}" == "true" ]]; then
-    PREFIX="[dry-run]"
-  else
-    PREFIX="[live]"
-  fi
-
   CONTRIB_TAG=""
   if [[ "${IS_CONTRIBUTOR}" == "true" ]]; then
-    CONTRIB_TAG="[contributor]"
+    CONTRIB_TAG="  *contributor*"
   fi
 
   ISSUE_TITLE=$(lookup_title "${ISSUE_NUM}")
+  CONF_PCT=$(printf '%.0f' "$(echo "${CONFIDENCE} * 100" | bc -l)")
 
-  printf '%s #%-5s  %-10s  %-40s  conf=%.2f  %s\n' \
-    "${PREFIX}" "${ISSUE_NUM}" "${ISSUE_STATUS}" \
-    "${CATEGORY:-<none>}" "${CONFIDENCE}" \
-    "${CONTRIB_TAG}"
-  if [[ -n "${ISSUE_TITLE}" ]]; then
-    printf '         └─ %s\n' "${ISSUE_TITLE}"
+  if [[ "${ISSUE_STATUS}" == "classified" ]]; then
+    CLASSIFIED_LINES+=("$(printf '  #%-4s  %3s%%  %s%s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}" "${CONTRIB_TAG}")")
+  elif [[ "${ISSUE_STATUS}" == "error" ]]; then
+    CLASSIFIED_LINES+=("$(printf '  #%-4s  ERR   %s%s' "${ISSUE_NUM}" "${ISSUE_TITLE}" "${CONTRIB_TAG}")")
+  else
+    SKIPPED_LINES+=("$(printf '  #%-4s  %3s%%  %s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}")")
   fi
 
-  # Truncate reasoning for the report (no issue body content).
   SAFE_REASONING=$(printf '%s' "${REASONING}" | head -c 500)
 
-  # Append to report.
   jq --argjson num "${ISSUE_NUM}" \
     --arg cat "${CATEGORY}" \
     --arg cat_action "${CATEGORY_ACTION}" \
@@ -357,10 +347,27 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
     }]' "${REPORT_FILE}" > "${REPORT_FILE}.tmp" && mv "${REPORT_FILE}.tmp" "${REPORT_FILE}"
 done
 
-# --- Section 2: Issues the agent screened out ---
-# The agent only outputs candidates it evaluated in detail. Issues not in the
-# agent output were screened out by title/labels as not matching. List them so
-# the user sees all open issues accounted for.
+# --- Display: Classified issues ---
+if [[ ${#CLASSIFIED_LINES[@]} -gt 0 ]]; then
+  echo "CLASSIFIED (${#CLASSIFIED_LINES[@]} issues)"
+  echo "------------------------------------------------------------"
+  for line in "${CLASSIFIED_LINES[@]}"; do
+    echo "${line}"
+  done
+  echo ""
+fi
+
+# --- Display: Skipped issues ---
+if [[ ${#SKIPPED_LINES[@]} -gt 0 ]]; then
+  echo "SKIPPED -- below ${THRESHOLD_PCT}% confidence (${#SKIPPED_LINES[@]} issues)"
+  echo "------------------------------------------------------------"
+  for line in "${SKIPPED_LINES[@]}"; do
+    echo "${line}"
+  done
+  echo ""
+fi
+
+# --- Section 2: Count screened-out issues (no line-by-line dump) ---
 if [[ -f "${ISSUES_FILE}" ]]; then
   NOT_EVALUATED_NUMS=()
   while IFS= read -r num; do
@@ -371,34 +378,37 @@ if [[ -f "${ISSUES_FILE}" ]]; then
   NOT_EVALUATED=${#NOT_EVALUATED_NUMS[@]}
 
   if [[ ${NOT_EVALUATED} -gt 0 ]]; then
+    printf 'SCREENED OUT (%s issues)\n' "${NOT_EVALUATED}"
+    echo "------------------------------------------------------------"
+    if [[ -n "${FILTER_CATEGORY}" ]]; then
+      printf '  %s issues did not match the "%s" filter\n' "${NOT_EVALUATED}" "${FILTER_CATEGORY}"
+    else
+      printf '  %s issues screened out by title/labels before evaluation\n' "${NOT_EVALUATED}"
+    fi
+    echo "  (full list available in classify-report.json artifact)"
     echo ""
-    echo "── Screened out by title/labels (${NOT_EVALUATED}) ──"
-    echo ""
-    for num in "${NOT_EVALUATED_NUMS[@]}"; do
-      TITLE=$(lookup_title "${num}")
-      printf '         #%-5s  %s\n' "${num}" "${TITLE}"
-    done
   fi
 fi
 
 TOTAL_ALL=$((AGENT_EVALUATED + NOT_EVALUATED))
 
-echo ""
-echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║  SUMMARY                                                    ║"
-echo "╠══════════════════════════════════════════════════════════════╣"
-printf '║  Total open issues:   %-5s                                 ║\n' "${ALL_OPEN_COUNT}"
-printf '║  Agent evaluated:     %-5s                                 ║\n' "${AGENT_EVALUATED}"
-printf '║  Screened out:        %-5s                                 ║\n' "${NOT_EVALUATED}"
-printf '║  Classified:          %-5s                                 ║\n' "${CLASSIFIED}"
-printf '║  Skipped (low conf):  %-5s                                 ║\n' "${SKIPPED}"
-printf '║  Contributor labels:  %-5s                                 ║\n' "${LABELED}"
-printf '║  Errors:              %-5s                                 ║\n' "${ERRORS}"
-if [[ "${DRY_RUN}" == "true" ]]; then
-  echo "║                                                            ║"
-  echo "║  ⚠  DRY RUN — nothing was written to GitHub               ║"
+echo "============================================================"
+echo "  SUMMARY"
+echo "============================================================"
+printf '  Open issues:        %s\n' "${ALL_OPEN_COUNT}"
+printf '  Agent evaluated:    %s\n' "${AGENT_EVALUATED}"
+printf '    Classified:       %s\n' "${CLASSIFIED}"
+printf '    Skipped:          %s\n' "${SKIPPED}"
+if [[ ${ERRORS} -gt 0 ]]; then
+  printf '    Errors:           %s\n' "${ERRORS}"
 fi
-echo "╚══════════════════════════════════════════════════════════════╝"
+printf '  Screened out:       %s\n' "${NOT_EVALUATED}"
+printf '  Contributor labels: %s\n' "${LABELED}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  echo "------------------------------------------------------------"
+  echo "  DRY RUN -- no changes were written to GitHub"
+fi
+echo "============================================================"
 
 # Copy the report to the output directory so it's included in artifacts.
 LATEST_OUTPUT=""
@@ -432,14 +442,29 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "| Contributor labels | ${LABELED} |"
     echo "| Errors | ${ERRORS} |"
     echo ""
-    echo "**Confidence threshold:** ${MIN_CONFIDENCE}"
+    echo "**Confidence threshold:** ${THRESHOLD_PCT}%"
+    if [[ -n "${FILTER_CATEGORY}" ]]; then
+      echo ""
+      echo "**Filter:** ${FILTER_CATEGORY}"
+    fi
     echo ""
-    echo "### Per-issue decisions"
+    echo "### Classified issues"
     echo ""
-    echo "| Issue | Category | Confidence | Contributor | Action | Reasoning |"
-    echo "|------:|----------|:----------:|:-----------:|--------|-----------|"
-    jq -r '.[] | "| #\(.issue_number) | \(.workstream_category // "—") | \(.confidence) | \(if .is_contributor then "✓" else "" end) | \(.category_action) | \(.reasoning | gsub("\n"; " ") | gsub("\\|"; "∣") | if length > 80 then .[:80] + "…" else . end) |"' \
-      "${REPORT_FILE}" 2>/dev/null || echo "| — | — | — | — | — | Report parse error |"
+    echo "| Issue | Category | Confidence | Action |"
+    echo "|------:|----------|:----------:|--------|"
+    jq -r '
+      .[] | select(.status == "classified") |
+      "| #\(.issue_number) | \(.workstream_category // "—") | \((.confidence * 100) | floor)% | \(.category_action)\(if .is_contributor then " · contributor" else "" end) |"
+    ' "${REPORT_FILE}" 2>/dev/null || echo "| — | — | — | — |"
+    echo ""
+    echo "### Skipped issues (below threshold)"
+    echo ""
+    echo "| Issue | Confidence | Reasoning |"
+    echo "|------:|:----------:|-----------|"
+    jq -r '
+      .[] | select(.status == "skipped") |
+      "| #\(.issue_number) | \((.confidence * 100) | floor)% | \(.reasoning | gsub("\n"; " ") | gsub("\\|"; "∣") | if length > 100 then .[:100] + "…" else . end) |"
+    ' "${REPORT_FILE}" 2>/dev/null || echo "| — | — | — |"
   } >> "${GITHUB_STEP_SUMMARY}"
 fi
 
