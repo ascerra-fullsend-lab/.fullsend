@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+# post-classify.sh — Apply classification decisions from the classify agent.
+#
+# Runs on the host after sandbox cleanup. Reads the agent's JSON output and:
+# 1. Adds issues to the GitHub Project if not already present
+# 2. Sets the Workstream Category field value on classified issues
+# 3. Adds the "contributor" label to issues from non-core-team authors
+#
+# In dry-run mode, no writes are performed. A structured report is written
+# to output/classify-report.json and a markdown summary is written to the
+# GitHub Step Summary (if in Actions) and to stdout.
+#
+# Required env vars:
+#   GH_TOKEN              — GitHub token with issues:write, project scope
+#   CLASSIFY_SOURCE_REPO  — owner/repo
+#   CLASSIFY_MIN_CONFIDENCE — minimum confidence to apply classification (default: 0.7)
+#
+# SECURITY:
+# - Uses the labels API directly (POST /issues/{number}/labels) instead of
+#   gh issue edit to avoid firing issues.edited events.
+# - Never logs tokens, credentials, or issue body content.
+# - The classify-report.json artifact contains only issue numbers, categories,
+#   and sanitized reasoning — no issue bodies, tokens, or credentials.
+
+set -euo pipefail
+
+MIN_CONFIDENCE="${CLASSIFY_MIN_CONFIDENCE:-0.7}"
+CONTEXT_DIR="/tmp/workspace/context"
+DRY_RUN="${CLASSIFY_DRY_RUN:-false}"
+FILTER_CATEGORY="${CLASSIFY_FILTER_CATEGORY:-}"
+
+# Mask token immediately (only in GitHub Actions to avoid printing it locally).
+if [[ -n "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  echo "::add-mask::${GH_TOKEN}"
+fi
+
+# Find the classify result JSON from the last iteration.
+RESULT_FILE=""
+for dir in iteration-*/output; do
+  if [[ -f "${dir}/agent-result.json" ]]; then
+    RESULT_FILE="${dir}/agent-result.json"
+  fi
+done
+
+if [[ -z "${RESULT_FILE}" ]]; then
+  echo "ERROR: agent-result.json not found in any iteration output directory"
+  exit 1
+fi
+
+echo "Reading classify result from: ${RESULT_FILE}"
+
+if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
+  echo "ERROR: ${RESULT_FILE} is not valid JSON"
+  exit 1
+fi
+
+# Load project metadata from pre-script.
+if [[ ! -f "${CONTEXT_DIR}/project-meta.json" ]]; then
+  echo "ERROR: project-meta.json not found — pre-script may have failed"
+  exit 1
+fi
+
+PROJECT_ID=$(jq -r '.project_id // empty' "${CONTEXT_DIR}/project-meta.json")
+FIELD_ID=$(jq -r '.field_id // empty' "${CONTEXT_DIR}/project-meta.json")
+
+if [[ -z "${PROJECT_ID}" || -z "${FIELD_ID}" ]]; then
+  echo "WARNING: Project metadata incomplete — will apply labels but skip project field updates."
+fi
+
+REPO="${CLASSIFY_SOURCE_REPO}"
+
+TOTAL=$(jq '.issues | length' "${RESULT_FILE}")
+CLASSIFIED=0
+SKIPPED=0
+LABELED=0
+ERRORS=0
+
+# Prepare the report array (built incrementally).
+REPORT_FILE="/tmp/workspace/classify-report.json"
+echo '[]' > "${REPORT_FILE}"
+
+echo ""
+echo "╔══════════════════════════════════════════════════════════════╗"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  echo "║  CLASSIFY AGENT — DRY RUN (no changes will be applied)     ║"
+else
+  echo "║  CLASSIFY AGENT — LIVE RUN                                 ║"
+fi
+echo "╠══════════════════════════════════════════════════════════════╣"
+echo "║  Repo:       ${REPO}"
+echo "║  Issues:     ${TOTAL}"
+echo "║  Threshold:  ${MIN_CONFIDENCE}"
+if [[ -n "${FILTER_CATEGORY}" ]]; then
+  echo "║  Filter:     ${FILTER_CATEGORY}"
+fi
+echo "╚══════════════════════════════════════════════════════════════╝"
+echo ""
+
+add_label() {
+  local issue_number="$1"
+  local label="$2"
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    return 0
+  fi
+  if ! gh api "repos/${REPO}/issues/${issue_number}/labels" \
+    -f "labels[]=${label}" --silent 2>/dev/null; then
+    echo "  ⚠ Failed to add label '${label}' to #${issue_number}"
+    return 1
+  fi
+  return 0
+}
+
+set_project_field() {
+  local issue_number="$1"
+  local category="$2"
+
+  if [[ -z "${PROJECT_ID}" || -z "${FIELD_ID}" ]]; then
+    return 1
+  fi
+
+  local option_id
+  option_id=$(jq -r --arg name "${category}" \
+    '.options[] | select(.name == $name) | .id' \
+    "${CONTEXT_DIR}/project-meta.json")
+
+  if [[ -z "${option_id}" ]]; then
+    echo "  ⚠ No project option found for category '${category}'"
+    return 1
+  fi
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    return 0
+  fi
+
+  # Resolve the issue's node_id once (used by both add and query).
+  local content_id
+  content_id=$(gh api "repos/${REPO}/issues/${issue_number}" --jq '.node_id' 2>/dev/null || true)
+  if [[ -z "${content_id}" ]]; then
+    echo "  ⚠ Failed to resolve node_id for #${issue_number}"
+    return 1
+  fi
+
+  # addProjectV2ItemById is idempotent — if the issue is already on the
+  # project it returns the existing item. If the mutation fails for any
+  # reason, fall back to querying for the existing item.
+  local item_id
+  item_id=$(gh api graphql -f query='
+    mutation($projectId: ID!, $contentId: ID!) {
+      addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+        item { id }
+      }
+    }' -f projectId="${PROJECT_ID}" \
+    -f contentId="${content_id}" \
+    --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null || true)
+
+  if [[ -z "${item_id}" ]]; then
+    # Fallback: item may already exist. Query for it.
+    item_id=$(gh api graphql -f query='
+      query($projectId: ID!, $contentId: ID!) {
+        node(id: $projectId) {
+          ... on ProjectV2 {
+            items(first: 100) {
+              nodes {
+                id
+                content { ... on Issue { id } }
+              }
+            }
+          }
+        }
+      }' -f projectId="${PROJECT_ID}" \
+      -f contentId="${content_id}" \
+      --jq ".data.node.items.nodes[] | select(.content.id == \"${content_id}\") | .id" 2>/dev/null || true)
+  fi
+
+  if [[ -z "${item_id}" ]]; then
+    echo "  ⚠ Failed to add or find #${issue_number} on project"
+    return 1
+  fi
+
+  if ! gh api graphql -f query='
+    mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+      updateProjectV2ItemFieldValue(input: {
+        projectId: $projectId
+        itemId: $itemId
+        fieldId: $fieldId
+        value: { singleSelectOptionId: $optionId }
+      }) {
+        projectV2Item { id }
+      }
+    }' -f projectId="${PROJECT_ID}" \
+    -f itemId="${item_id}" \
+    -f fieldId="${FIELD_ID}" \
+    -f optionId="${option_id}" --silent 2>/dev/null; then
+    echo "  ⚠ Failed to set field on #${issue_number}"
+    return 1
+  fi
+
+  return 0
+}
+
+# Process each classification.
+for i in $(seq 0 $((TOTAL - 1))); do
+  ISSUE_NUM=$(jq -r ".issues[${i}].issue_number" "${RESULT_FILE}")
+  CATEGORY=$(jq -r ".issues[${i}].workstream_category // empty" "${RESULT_FILE}")
+  IS_CONTRIBUTOR=$(jq -r ".issues[${i}].is_contributor_issue" "${RESULT_FILE}")
+  CONFIDENCE=$(jq -r ".issues[${i}].confidence" "${RESULT_FILE}")
+  REASONING=$(jq -r ".issues[${i}].reasoning" "${RESULT_FILE}")
+
+  # Per-issue action tracking for the report.
+  ACTIONS_TAKEN=""
+  ISSUE_STATUS="skipped"
+
+  # All API calls below are scoped to REPO (repos/${REPO}/issues/...).
+  # Cross-repo writes are impossible — GitHub returns 404 for issue numbers
+  # that don't exist in the target repo.
+
+  # --- Contributor label ---
+  LABEL_ACTION="none"
+  if [[ "${IS_CONTRIBUTOR}" == "true" ]]; then
+    if add_label "${ISSUE_NUM}" "contributor"; then
+      ((LABELED++)) || true
+      if [[ "${DRY_RUN}" == "true" ]]; then
+        LABEL_ACTION="would-add"
+      else
+        LABEL_ACTION="added"
+      fi
+      ACTIONS_TAKEN="label:contributor"
+    fi
+  fi
+
+  # --- Workstream category ---
+  # Safety net: if filter is active and agent returned a non-matching category, treat as null.
+  if [[ -n "${FILTER_CATEGORY}" && -n "${CATEGORY}" && "${CATEGORY}" != "null" && "${CATEGORY}" != "${FILTER_CATEGORY}" ]]; then
+    CATEGORY=""
+  fi
+
+  CATEGORY_ACTION="none"
+  if [[ -n "${CATEGORY}" && "${CATEGORY}" != "null" ]]; then
+    PASSES_THRESHOLD=$(printf '%s >= %s\n' "${CONFIDENCE}" "${MIN_CONFIDENCE}" | bc -l 2>/dev/null || echo "0")
+    if [[ "${PASSES_THRESHOLD}" == "1" ]]; then
+      if set_project_field "${ISSUE_NUM}" "${CATEGORY}"; then
+        ((CLASSIFIED++)) || true
+        ISSUE_STATUS="classified"
+        if [[ "${DRY_RUN}" == "true" ]]; then
+          CATEGORY_ACTION="would-set"
+        else
+          CATEGORY_ACTION="set"
+        fi
+        ACTIONS_TAKEN="${ACTIONS_TAKEN:+${ACTIONS_TAKEN}, }category:${CATEGORY}"
+      else
+        ((ERRORS++)) || true
+        ISSUE_STATUS="error"
+        CATEGORY_ACTION="error"
+      fi
+    else
+      ((SKIPPED++)) || true
+      CATEGORY_ACTION="below-threshold"
+    fi
+  else
+    ((SKIPPED++)) || true
+    CATEGORY_ACTION="unclassifiable"
+  fi
+
+  # --- Print per-issue line ---
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    PREFIX="[dry-run]"
+  else
+    PREFIX="[live]"
+  fi
+
+  CONTRIB_TAG=""
+  if [[ "${IS_CONTRIBUTOR}" == "true" ]]; then
+    CONTRIB_TAG="contributor"
+  fi
+
+  printf '%s #%-5s  %-10s  %-40s  conf=%.2f  %s\n' \
+    "${PREFIX}" "${ISSUE_NUM}" "${ISSUE_STATUS}" \
+    "${CATEGORY:-<none>}" "${CONFIDENCE}" \
+    "${CONTRIB_TAG}"
+
+  # Truncate reasoning for the report (no issue body content).
+  SAFE_REASONING=$(printf '%s' "${REASONING}" | head -c 500)
+
+  # Append to report.
+  jq --argjson num "${ISSUE_NUM}" \
+    --arg cat "${CATEGORY}" \
+    --arg cat_action "${CATEGORY_ACTION}" \
+    --arg lbl_action "${LABEL_ACTION}" \
+    --arg status "${ISSUE_STATUS}" \
+    --arg conf "${CONFIDENCE}" \
+    --arg reason "${SAFE_REASONING}" \
+    --arg is_contrib "${IS_CONTRIBUTOR}" \
+    '. += [{
+      issue_number: $num,
+      status: $status,
+      workstream_category: (if $cat == "" or $cat == "null" then null else $cat end),
+      category_action: $cat_action,
+      label_action: $lbl_action,
+      is_contributor: ($is_contrib == "true"),
+      confidence: ($conf | tonumber),
+      reasoning: $reason
+    }]' "${REPORT_FILE}" > "${REPORT_FILE}.tmp" && mv "${REPORT_FILE}.tmp" "${REPORT_FILE}"
+done
+
+echo ""
+echo "╔══════════════════════════════════════════════════════════════╗"
+echo "║  SUMMARY                                                    ║"
+echo "╠══════════════════════════════════════════════════════════════╣"
+printf '║  Total processed:     %-5s                                 ║\n' "${TOTAL}"
+printf '║  Classified:          %-5s                                 ║\n' "${CLASSIFIED}"
+printf '║  Skipped:             %-5s                                 ║\n' "${SKIPPED}"
+printf '║  Contributor labels:  %-5s                                 ║\n' "${LABELED}"
+printf '║  Errors:              %-5s                                 ║\n' "${ERRORS}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  echo "║                                                            ║"
+  echo "║  ⚠  DRY RUN — nothing was written to GitHub               ║"
+fi
+echo "╚══════════════════════════════════════════════════════════════╝"
+
+# Copy the report to the output directory so it's included in artifacts.
+LATEST_OUTPUT=""
+for dir in iteration-*/output; do
+  if [[ -d "${dir}" ]]; then
+    LATEST_OUTPUT="${dir}"
+  fi
+done
+if [[ -n "${LATEST_OUTPUT}" ]]; then
+  cp "${REPORT_FILE}" "${LATEST_OUTPUT}/classify-report.json"
+  echo ""
+  echo "Report written to ${LATEST_OUTPUT}/classify-report.json"
+fi
+
+# Write GitHub Step Summary.
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  {
+    echo "## Classify Agent Results"
+    echo ""
+    if [[ "${DRY_RUN}" == "true" ]]; then
+      echo "> **DRY RUN** — no changes were applied to GitHub. Review the table below to see what *would* happen."
+      echo ""
+    fi
+    echo "| Metric | Count |"
+    echo "|--------|------:|"
+    echo "| Issues processed | ${TOTAL} |"
+    echo "| Classified | ${CLASSIFIED} |"
+    echo "| Skipped | ${SKIPPED} |"
+    echo "| Contributor labels | ${LABELED} |"
+    echo "| Errors | ${ERRORS} |"
+    echo ""
+    echo "**Confidence threshold:** ${MIN_CONFIDENCE}"
+    echo ""
+    echo "### Per-issue decisions"
+    echo ""
+    echo "| Issue | Category | Confidence | Contributor | Action | Reasoning |"
+    echo "|------:|----------|:----------:|:-----------:|--------|-----------|"
+    jq -r '.[] | "| #\(.issue_number) | \(.workstream_category // "—") | \(.confidence) | \(if .is_contributor then "✓" else "" end) | \(.category_action) | \(.reasoning | gsub("\n"; " ") | gsub("\\|"; "∣") | if length > 80 then .[:80] + "…" else . end) |"' \
+      "${REPORT_FILE}" 2>/dev/null || echo "| — | — | — | — | — | Report parse error |"
+  } >> "${GITHUB_STEP_SUMMARY}"
+fi
+
+if [[ ${ERRORS} -gt 0 ]]; then
+  echo "::warning::${ERRORS} error(s) during classification"
+fi
