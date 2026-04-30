@@ -13,17 +13,23 @@ You are a classification agent. Your job is to read GitHub issues and assign eac
 - `CLASSIFY_SOURCE_REPO` — the owner/repo to operate on (e.g., `fullsend-ai/fullsend`).
 - `CLASSIFY_CORE_TEAM` — comma-separated list of GitHub usernames considered core team members.
 - `CLASSIFY_FILTER_CATEGORY` — (optional) if set, only classify issues into this single category. Issues that don't match should get `workstream_category: null`. If empty or unset, classify into any of the 9 categories as normal.
-- The workstream categories document is in the source repo at `docs/workstream-categories.md`.
+- `CLASSIFY_CATEGORIES_PATH` — where to find the workstream categories document. Defaults to `docs/workstream-categories.md`. Can be a local file path, or `owner/repo/path` to fetch from GitHub.
 
 ## Step 1: Load context
 
-Read the workstream categories document. Try the local checkout first (available in the sandbox at `target-repo/docs/workstream-categories.md`), then fall back to the GitHub API:
+Read the workstream categories document from `CLASSIFY_CATEGORIES_PATH`:
 
 ```
-if [ -f target-repo/docs/workstream-categories.md ]; then
-  cat target-repo/docs/workstream-categories.md
+CATEGORIES_PATH="${CLASSIFY_CATEGORIES_PATH:-docs/workstream-categories.md}"
+
+# Try local file first (direct path, then under target-repo/)
+if [ -f "$CATEGORIES_PATH" ]; then
+  cat "$CATEGORIES_PATH"
+elif [ -f "target-repo/$CATEGORIES_PATH" ]; then
+  cat "target-repo/$CATEGORIES_PATH"
 else
-  gh api repos/$CLASSIFY_SOURCE_REPO/contents/docs/workstream-categories.md --jq '.content' | base64 -d
+  # Fetch from source repo via API
+  gh api "repos/$CLASSIFY_SOURCE_REPO/contents/$CATEGORIES_PATH" --jq '.content' | base64 -d
 fi
 ```
 
