@@ -80,9 +80,7 @@ def build_summary_body(data):
 
     strategy_change = data.get("strategy_change", "")
     if strategy_change:
-        sections.append(
-            f"\n> **Strategy change:** {strategy_change}"
-        )
+        sections.append(f"\n> **Strategy change:** {strategy_change}")
 
     if dp_text:
         sections.append(dp_text)
