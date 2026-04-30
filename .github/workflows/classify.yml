@@ -127,21 +127,29 @@ jobs:
       - name: Validate source repo is enrolled
         env:
           SOURCE_REPO: ${{ steps.params.outputs.source_repo }}
+          EVENT_TYPE: ${{ steps.params.outputs.classify_mode == 'single' && inputs.event_type || 'manual' }}
         run: |
           if [[ ! "$SOURCE_REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
             echo "::error::Invalid source_repo format: must be owner/repo"
             exit 1
           fi
-          REPO_OWNER="${SOURCE_REPO%%/*}"
-          if [[ "$REPO_OWNER" != "$GITHUB_REPOSITORY_OWNER" ]]; then
-            echo "::error::source_repo owner does not match org"
-            exit 1
-          fi
-          REPO_NAME="${SOURCE_REPO#*/}"
-          ENABLED=$(yq ".repos.\"$REPO_NAME\".enabled" config.yaml 2>/dev/null)
-          if [[ "$ENABLED" != "true" ]]; then
-            echo "::error::repo is not enabled in config.yaml"
-            exit 1
+
+          # Shim dispatches (issue events) must target same-org repos.
+          # Manual workflow_dispatch allows cross-org repos for testing.
+          if [[ "$EVENT_TYPE" == "issues" ]]; then
+            REPO_OWNER="${SOURCE_REPO%%/*}"
+            if [[ "$REPO_OWNER" != "$GITHUB_REPOSITORY_OWNER" ]]; then
+              echo "::error::source_repo owner does not match org"
+              exit 1
+            fi
+            REPO_NAME="${SOURCE_REPO#*/}"
+            ENABLED=$(yq ".repos.\"$REPO_NAME\".enabled" config.yaml 2>/dev/null)
+            if [[ "$ENABLED" != "true" ]]; then
+              echo "::error::repo is not enabled in config.yaml"
+              exit 1
+            fi
+          else
+            echo "::notice::Manual dispatch — skipping enrollment check for ${SOURCE_REPO}"
           fi
 
       - name: Generate app token
