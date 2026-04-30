@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# pre-classify.sh — Gather context for the classify agent.
+# pre-classify.sh — Prepare metadata for the classify agent's post-script.
 #
-# Runs on the host via the harness pre_script mechanism. Fetches the target
-# issue(s), all open issues/PRs for context, and the workstream categories
-# document. Writes everything to /tmp/workspace/context/ for the sandbox.
+# Runs on the host via the harness pre_script mechanism. Determines which
+# issues to classify and discovers GitHub Project metadata needed by the
+# post-script. All output goes to /tmp/workspace/context/ (host-side only;
+# the agent sandbox does NOT see these files).
 #
 # Required env vars:
 #   GH_TOKEN              — GitHub token with issues:read, contents:read scope
@@ -48,24 +49,7 @@ fi
 
 ORG="${CLASSIFY_SOURCE_REPO%%/*}"
 
-# --- Fetch workstream categories document ---
-# Try local file first (for pre-merge local runs), then fall back to API.
-if [[ -f "docs/workstream-categories.md" ]]; then
-  cp "docs/workstream-categories.md" "${CONTEXT_DIR}/workstream-categories.md"
-  echo "✓ workstream-categories.md copied from local repo ($(wc -c < "${CONTEXT_DIR}/workstream-categories.md") bytes)"
-else
-  echo "Fetching workstream-categories.md from ${CLASSIFY_SOURCE_REPO}..."
-  if ! gh api "repos/${CLASSIFY_SOURCE_REPO}/contents/docs/workstream-categories.md" \
-    --jq '.content' | base64 -d > "${CONTEXT_DIR}/workstream-categories.md"; then
-    echo "ERROR: Failed to fetch workstream-categories.md"
-    exit 1
-  fi
-  echo "✓ workstream-categories.md fetched ($(wc -c < "${CONTEXT_DIR}/workstream-categories.md") bytes)"
-fi
-
-# --- Fetch all open issues for context ---
-# Only fetch structural fields (no body) for the context list to avoid
-# leaking private repo content into logs or artifacts.
+# --- Fetch all open issues (metadata only, used to determine unclassified set) ---
 # gh handles pagination internally; --limit sets the max results.
 echo "Fetching open issues from ${CLASSIFY_SOURCE_REPO}..."
 gh issue list --repo "${CLASSIFY_SOURCE_REPO}" --state open \
@@ -73,14 +57,6 @@ gh issue list --repo "${CLASSIFY_SOURCE_REPO}" --state open \
   > "${CONTEXT_DIR}/open-issues.json"
 ISSUE_COUNT=$(jq length "${CONTEXT_DIR}/open-issues.json")
 echo "✓ ${ISSUE_COUNT} open issues fetched"
-
-# --- Fetch open PRs for context ---
-echo "Fetching open PRs from ${CLASSIFY_SOURCE_REPO}..."
-gh pr list --repo "${CLASSIFY_SOURCE_REPO}" --state open \
-  --json number,title,labels,author,createdAt --limit 5000 \
-  > "${CONTEXT_DIR}/open-prs.json"
-PR_COUNT=$(jq length "${CONTEXT_DIR}/open-prs.json")
-echo "✓ ${PR_COUNT} open PRs fetched"
 
 # --- Determine which issues to classify ---
 ISSUE_NUMBERS_FILE="${CONTEXT_DIR}/issue-numbers.txt"
@@ -230,16 +206,6 @@ else
     echo "  - ${opt}"
   done
 fi
-
-# --- Export env vars for the agent ---
-# SECURITY: Only export values the agent needs inside the sandbox.
-# GH_TOKEN is delivered separately via the harness runner_env.
-{
-  printf 'export CLASSIFY_ISSUE_NUMBERS="%s"\n' "$(tr '\n' ' ' < "${ISSUE_NUMBERS_FILE}" | sed 's/ *$//')"
-  printf 'export CLASSIFY_SOURCE_REPO="%s"\n' "${CLASSIFY_SOURCE_REPO}"
-  printf 'export CLASSIFY_CORE_TEAM="%s"\n' "${CLASSIFY_CORE_TEAM:-}"
-  printf 'export CLASSIFY_FILTER_CATEGORY="%s"\n' "${CLASSIFY_FILTER_CATEGORY:-}"
-} > "${CONTEXT_DIR}/agent-env.sh"
 
 TOTAL_ISSUES=$(wc -l < "${ISSUE_NUMBERS_FILE}" | tr -d ' ')
 echo ""
