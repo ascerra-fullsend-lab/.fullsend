@@ -187,7 +187,7 @@ if [[ ! "${FIELD_NAME}" =~ ^[a-zA-Z0-9\ ,._-]+$ ]]; then
   exit 1
 fi
 
-PROJECT_META=$(gh api graphql -f query='
+PROJECT_META=$(timeout 15 gh api graphql -f query='
   query($org: String!, $num: Int!, $fieldName: String!) {
     organization(login: $org) {
       projectV2(number: $num) {
