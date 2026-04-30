@@ -20,23 +20,6 @@
 
 set -euo pipefail
 
-# Run a command with a hard-kill timeout. Writes stdout to a file.
-# Usage: _run_with_timeout <seconds> <output_file> <command...>
-# Returns the command's exit code, or 137 on timeout.
-_run_with_timeout() {
-  local secs=$1 outfile=$2
-  shift 2
-  "$@" > "${outfile}" 2>/dev/null &
-  local cmd_pid=$!
-  ( sleep "${secs}" && kill -9 "${cmd_pid}" 2>/dev/null ) &
-  local wd_pid=$!
-  local rc=0
-  wait "${cmd_pid}" 2>/dev/null || rc=$?
-  kill "${wd_pid}" 2>/dev/null || true
-  wait "${wd_pid}" 2>/dev/null || true
-  return "${rc}"
-}
-
 CONTEXT_DIR="/tmp/workspace/context"
 mkdir -p "${CONTEXT_DIR}"
 
@@ -65,6 +48,16 @@ if [[ ! "${CLASSIFY_SOURCE_REPO}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
 fi
 
 ORG="${CLASSIFY_SOURCE_REPO%%/*}"
+
+# Detect cross-org: if the GHA runner org differs from the source repo org,
+# GraphQL project queries will hang because the token can't access the other
+# org's projects. Skip project queries entirely in that case.
+CROSS_ORG="false"
+if [[ -n "${GITHUB_REPOSITORY_OWNER:-}" && "${GITHUB_REPOSITORY_OWNER}" != "${ORG}" ]]; then
+  CROSS_ORG="true"
+  echo "⚠ Cross-org mode: runner=${GITHUB_REPOSITORY_OWNER}, source=${ORG}"
+  echo "  Project queries will be skipped (token cannot access ${ORG} projects)"
+fi
 
 # --- Fetch all open issues (metadata only, used to determine unclassified set) ---
 # gh handles pagination internally; --limit sets the max results.
@@ -99,89 +92,88 @@ case "${CLASSIFY_MODE}" in
 
     ALL_ISSUE_NUMBERS=$(jq -r '.[].number' "${CONTEXT_DIR}/open-issues.json")
 
-    # Validate FIELD_NAME: alphanumeric, spaces, hyphens, commas only.
     if [[ ! "${FIELD_NAME}" =~ ^[a-zA-Z0-9\ ,._-]+$ ]]; then
       echo "ERROR: CLASSIFY_FIELD_NAME contains disallowed characters"
       exit 1
     fi
 
-    # Page through ALL project items (100 per page).
-    # Uses background-job + watchdog to hard-kill gh if it hangs (cross-org tokens).
-    ALL_PROJECT_ITEMS="[]"
-    HAS_NEXT="true"
-    END_CURSOR=""
-    PROJECT_ACCESS_OK="true"
-    GH_TMPFILE=$(mktemp)
-    while [[ "${HAS_NEXT}" == "true" ]]; do
-      CURSOR_ARG=""
-      if [[ -n "${END_CURSOR}" ]]; then
-        CURSOR_ARG="-f afterCursor=${END_CURSOR}"
-      fi
-
-      if ! _run_with_timeout 15 "${GH_TMPFILE}" \
-           gh api graphql -f query='
-        query($org: String!, $num: Int!, $fieldName: String!, $afterCursor: String) {
-          organization(login: $org) {
-            projectV2(number: $num) {
-              items(first: 100, after: $afterCursor) {
-                nodes {
-                  content {
-                    ... on Issue {
-                      number
-                      repository { nameWithOwner }
-                    }
-                  }
-                  fieldValueByName(name: $fieldName) {
-                    ... on ProjectV2ItemFieldSingleSelectValue {
-                      name
-                    }
-                  }
-                }
-                pageInfo { hasNextPage endCursor }
-              }
-            }
-          }
-        }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" \
-           ${CURSOR_ARG:+"${CURSOR_ARG}"}; then
-        echo "⚠ Could not query project items (timeout or access denied)"
-        PROJECT_ACCESS_OK="false"
-        break
-      fi
-
-      PAGE=$(cat "${GH_TMPFILE}")
-      if [[ -z "${PAGE}" ]] || ! echo "${PAGE}" | jq -e '.data.organization.projectV2.items' >/dev/null 2>&1; then
-        echo "⚠ Project query returned no data — treating all issues as unclassified"
-        PROJECT_ACCESS_OK="false"
-        break
-      fi
-
-      PAGE_NODES=$(echo "${PAGE}" | jq -c '.data.organization.projectV2.items.nodes // []')
-      ALL_PROJECT_ITEMS=$(echo "${ALL_PROJECT_ITEMS}" "${PAGE_NODES}" | jq -sc '.[0] + .[1]')
-      HAS_NEXT=$(echo "${PAGE}" | jq -r '.data.organization.projectV2.items.pageInfo.hasNextPage // false')
-      END_CURSOR=$(echo "${PAGE}" | jq -r '.data.organization.projectV2.items.pageInfo.endCursor // empty')
-    done
-    rm -f "${GH_TMPFILE}"
-
-    if [[ "${PROJECT_ACCESS_OK}" == "true" ]]; then
-      PROJECT_ITEMS="${ALL_PROJECT_ITEMS}"
-      CLASSIFIED_NUMBERS=$(printf '%s' "${PROJECT_ITEMS}" | jq -r --arg repo "${CLASSIFY_SOURCE_REPO}" '
-        .[]
-        | select(.content.repository.nameWithOwner == $repo)
-        | select(.fieldValueByName.name != null and .fieldValueByName.name != "")
-        | .content.number' 2>/dev/null | sort -n || true)
-
-      while IFS= read -r num; do
-        if [[ -n "${num}" ]] && ! printf '%s\n' "${CLASSIFIED_NUMBERS}" | grep -qx "${num}"; then
-          echo "${num}"
-        fi
-      done <<< "${ALL_ISSUE_NUMBERS}" > "${ISSUE_NUMBERS_FILE}"
-
-      UNCLASSIFIED_COUNT=$(wc -l < "${ISSUE_NUMBERS_FILE}" | tr -d ' ')
-      echo "✓ Found ${UNCLASSIFIED_COUNT} unclassified issues"
-    else
+    if [[ "${CROSS_ORG}" == "true" ]]; then
       echo "${ALL_ISSUE_NUMBERS}" > "${ISSUE_NUMBERS_FILE}"
       TOTAL_COUNT=$(wc -l < "${ISSUE_NUMBERS_FILE}" | tr -d ' ')
-      echo "✓ Treating all ${TOTAL_COUNT} open issues as unclassified (no project access)"
+      echo "✓ Treating all ${TOTAL_COUNT} open issues as unclassified (cross-org, no project access)"
+    else
+      ALL_PROJECT_ITEMS="[]"
+      HAS_NEXT="true"
+      END_CURSOR=""
+      PROJECT_ACCESS_OK="true"
+      while [[ "${HAS_NEXT}" == "true" ]]; do
+        CURSOR_ARG=""
+        if [[ -n "${END_CURSOR}" ]]; then
+          CURSOR_ARG="-f afterCursor=${END_CURSOR}"
+        fi
+
+        PAGE=$(gh api graphql -f query='
+          query($org: String!, $num: Int!, $fieldName: String!, $afterCursor: String) {
+            organization(login: $org) {
+              projectV2(number: $num) {
+                items(first: 100, after: $afterCursor) {
+                  nodes {
+                    content {
+                      ... on Issue {
+                        number
+                        repository { nameWithOwner }
+                      }
+                    }
+                    fieldValueByName(name: $fieldName) {
+                      ... on ProjectV2ItemFieldSingleSelectValue {
+                        name
+                      }
+                    }
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+          }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" \
+             ${CURSOR_ARG:+"${CURSOR_ARG}"} 2>/dev/null) || {
+          echo "⚠ Could not query project items (access denied)"
+          PROJECT_ACCESS_OK="false"
+          break
+        }
+
+        if [[ -z "${PAGE}" ]] || ! echo "${PAGE}" | jq -e '.data.organization.projectV2.items' >/dev/null 2>&1; then
+          echo "⚠ Project query returned no data — treating all issues as unclassified"
+          PROJECT_ACCESS_OK="false"
+          break
+        fi
+
+        PAGE_NODES=$(echo "${PAGE}" | jq -c '.data.organization.projectV2.items.nodes // []')
+        ALL_PROJECT_ITEMS=$(echo "${ALL_PROJECT_ITEMS}" "${PAGE_NODES}" | jq -sc '.[0] + .[1]')
+        HAS_NEXT=$(echo "${PAGE}" | jq -r '.data.organization.projectV2.items.pageInfo.hasNextPage // false')
+        END_CURSOR=$(echo "${PAGE}" | jq -r '.data.organization.projectV2.items.pageInfo.endCursor // empty')
+      done
+
+      if [[ "${PROJECT_ACCESS_OK}" == "true" ]]; then
+        PROJECT_ITEMS="${ALL_PROJECT_ITEMS}"
+        CLASSIFIED_NUMBERS=$(printf '%s' "${PROJECT_ITEMS}" | jq -r --arg repo "${CLASSIFY_SOURCE_REPO}" '
+          .[]
+          | select(.content.repository.nameWithOwner == $repo)
+          | select(.fieldValueByName.name != null and .fieldValueByName.name != "")
+          | .content.number' 2>/dev/null | sort -n || true)
+
+        while IFS= read -r num; do
+          if [[ -n "${num}" ]] && ! printf '%s\n' "${CLASSIFIED_NUMBERS}" | grep -qx "${num}"; then
+            echo "${num}"
+          fi
+        done <<< "${ALL_ISSUE_NUMBERS}" > "${ISSUE_NUMBERS_FILE}"
+
+        UNCLASSIFIED_COUNT=$(wc -l < "${ISSUE_NUMBERS_FILE}" | tr -d ' ')
+        echo "✓ Found ${UNCLASSIFIED_COUNT} unclassified issues"
+      else
+        echo "${ALL_ISSUE_NUMBERS}" > "${ISSUE_NUMBERS_FILE}"
+        TOTAL_COUNT=$(wc -l < "${ISSUE_NUMBERS_FILE}" | tr -d ' ')
+        echo "✓ Treating all ${TOTAL_COUNT} open issues as unclassified (no project access)"
+      fi
     fi
     ;;
 
@@ -208,28 +200,27 @@ if [[ ! "${FIELD_NAME}" =~ ^[a-zA-Z0-9\ ,._-]+$ ]]; then
   exit 1
 fi
 
-META_TMPFILE=$(mktemp)
-_run_with_timeout 15 "${META_TMPFILE}" \
-  gh api graphql -f query='
-  query($org: String!, $num: Int!, $fieldName: String!) {
-    organization(login: $org) {
-      projectV2(number: $num) {
-        id
-        field(name: $fieldName) {
-          ... on ProjectV2SingleSelectField {
-            id
-            options {
+if [[ "${CROSS_ORG}" == "true" ]]; then
+  PROJECT_META='{}'
+else
+  PROJECT_META=$(gh api graphql -f query='
+    query($org: String!, $num: Int!, $fieldName: String!) {
+      organization(login: $org) {
+        projectV2(number: $num) {
+          id
+          field(name: $fieldName) {
+            ... on ProjectV2SingleSelectField {
               id
-              name
+              options {
+                id
+                name
+              }
             }
           }
         }
       }
-    }
-  }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" || true
-PROJECT_META=$(cat "${META_TMPFILE}" 2>/dev/null || echo '{}')
-rm -f "${META_TMPFILE}"
-if [[ -z "${PROJECT_META}" ]]; then PROJECT_META='{}'; fi
+    }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" 2>/dev/null || echo '{}')
+fi
 
 # Write only the structural metadata the post-script needs.
 # Project/field/option IDs are not secrets (discoverable via public API).
