@@ -202,6 +202,9 @@ jobs:
           CLASSIFY_FILTER_CATEGORY: ${{ steps.params.outputs.filter_category }}
         run: bash .github/scripts/setup-agent-env.sh
 
+      - name: Prepare target-repo placeholder
+        run: mkdir -p "${GITHUB_WORKSPACE}/target-repo"
+
       - name: Run classify agent
         uses: ./.github/actions/fullsend
         env:
