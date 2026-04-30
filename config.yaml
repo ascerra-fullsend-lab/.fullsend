@@ -11,25 +11,13 @@ defaults:
         - triage
         - coder
         - review
+        - scribe
+        - classify
     max_implementation_retries: 2
     auto_merge: false
-agents:
-    - role: fullsend
-      name: ascerra-fullsend-lab-fullsend
-      slug: ascerra-fullsend-lab-fullsend
-    - role: triage
-      name: ascerra-fullsend-lab-triage
-      slug: ascerra-fullsend-lab-triage
-    - role: coder
-      name: ascerra-fullsend-lab-coder
-      slug: ascerra-fullsend-lab-coder
-    - role: review
-      name: ascerra-fullsend-lab-review
-      slug: ascerra-fullsend-lab-review
-    - role: scribe
-      name: ascerra-fullsend-lab-scribe
-      slug: ascerra-fullsend-lab-scribe
+agents: []
 repos:
+    .fullsend:
+        enabled: false
     fix-agent-test:
-        enabled: true
-
+        enabled: false
