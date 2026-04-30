@@ -22,13 +22,14 @@ Read the workstream categories document from `CLASSIFY_CATEGORIES_PATH`:
 ```
 CATEGORIES_PATH="${CLASSIFY_CATEGORIES_PATH:-docs/workstream-categories.md}"
 
-# Try local file first (direct path, then under target-repo/)
+# Try local file first, then workspace root (/tmp/workspace/), then API fallback
 if [ -f "$CATEGORIES_PATH" ]; then
   cat "$CATEGORIES_PATH"
+elif [ -f "../$CATEGORIES_PATH" ]; then
+  cat "../$CATEGORIES_PATH"
 elif [ -f "target-repo/$CATEGORIES_PATH" ]; then
   cat "target-repo/$CATEGORIES_PATH"
 else
-  # Fetch from source repo via API
   gh api "repos/$CLASSIFY_SOURCE_REPO/contents/$CATEGORIES_PATH" --jq '.content' | base64 -d
 fi
 ```
@@ -153,6 +154,7 @@ AGENT_RESULT_EOF
 - NEVER invent category names. Use only the 9 listed above or null.
 - NEVER modify issue content, labels, or state. You only produce a classification JSON.
 - NEVER fetch or reference issues from any repository other than `$CLASSIFY_SOURCE_REPO`. Only use `--repo "$CLASSIFY_SOURCE_REPO"` in all `gh` commands.
+- NEVER read, cat, or print files under `.env`, `.env.d/`, or any file containing credentials or tokens. These contain secrets that must not appear in the transcript. Environment variables you need are already available in your shell.
 - NEVER quote issue text, secrets, tokens, credentials, or PII verbatim in the `reasoning` field. Summarize concepts without reproducing original wording. This prevents sensitive content from leaking into logs and artifacts.
 - You MUST write `${FULLSEND_OUTPUT_DIR}/agent-result.json` before finishing. This is the only output the harness checks.
 - Prioritize producing output over exhaustive analysis. If time is limited, classify the issues you have evaluated so far and write the file.
