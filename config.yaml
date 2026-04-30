@@ -7,15 +7,13 @@ dispatch:
     platform: github-actions
 defaults:
     roles:
-        - fullsend
-        - triage
-        - coder
-        - review
-        - scribe
         - classify
     max_implementation_retries: 2
     auto_merge: false
-agents: []
+agents:
+    - role: classify
+      name: ascerra-fullsend-lab-classify
+      slug: ascerra-fullsend-lab-classify
 repos:
     .fullsend:
         enabled: false
