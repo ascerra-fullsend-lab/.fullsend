@@ -16,7 +16,7 @@ host_files:
     dest: /tmp/workspace/.env.d/classify.env
     expand: true
   - src: docs/workstream-categories.md
-    dest: /tmp/workspace/docs/workstream-categories.md
+    dest: /tmp/workspace/workstream-categories.md
 
 skills: []
 
