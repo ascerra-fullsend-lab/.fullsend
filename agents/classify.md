@@ -22,11 +22,13 @@ Read the workstream categories document from `CLASSIFY_CATEGORIES_PATH`:
 ```
 CATEGORIES_PATH="${CLASSIFY_CATEGORIES_PATH:-docs/workstream-categories.md}"
 
-# Try local file first, then workspace root (/tmp/workspace/), then API fallback
+# Try local file first, then known sandbox locations, then API fallback
 if [ -f "$CATEGORIES_PATH" ]; then
   cat "$CATEGORIES_PATH"
 elif [ -f "../$CATEGORIES_PATH" ]; then
   cat "../$CATEGORIES_PATH"
+elif [ -f "/tmp/workspace/$(basename "$CATEGORIES_PATH")" ]; then
+  cat "/tmp/workspace/$(basename "$CATEGORIES_PATH")"
 elif [ -f "target-repo/$CATEGORIES_PATH" ]; then
   cat "target-repo/$CATEGORIES_PATH"
 else
