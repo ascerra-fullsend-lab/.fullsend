@@ -17,11 +17,17 @@ You are a classification agent. Your job is to read GitHub issues and assign eac
 
 ## Step 1: Load context
 
-Fetch the workstream categories document from the source repo:
+Read the workstream categories document. Try the local checkout first (available in the sandbox at `target-repo/docs/workstream-categories.md`), then fall back to the GitHub API:
 
 ```
-gh api repos/$CLASSIFY_SOURCE_REPO/contents/docs/workstream-categories.md --jq '.content' | base64 -d
+if [ -f target-repo/docs/workstream-categories.md ]; then
+  cat target-repo/docs/workstream-categories.md
+else
+  gh api repos/$CLASSIFY_SOURCE_REPO/contents/docs/workstream-categories.md --jq '.content' | base64 -d
+fi
 ```
+
+**You MUST verify you received the full document.** It should contain detailed descriptions for all 9 workstream categories. If the command returns an error or empty output, STOP and report the failure — do not proceed without category descriptions.
 
 Parse the core team list from `CLASSIFY_CORE_TEAM` into a set of usernames.
 
