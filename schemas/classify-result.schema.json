@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "classify-result.schema.json",
+  "title": "Classify Agent Result",
+  "description": "Structured output from the classify agent, validated by the harness before the post-script runs (ADR 0022).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["issues"],
+  "properties": {
+    "issues": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/classification"
+      }
+    }
+  },
+  "$defs": {
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issue_number", "workstream_category", "is_contributor_issue", "reasoning", "confidence"],
+      "properties": {
+        "issue_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "workstream_category": {
+          "type": ["string", "null"],
+          "enum": [
+            "Support",
+            "Installer - web/cli",
+            "New agent capability",
+            "Docs",
+            "Agent dev, evals + security",
+            "Agent runtime architecture, evolve",
+            "Other platforms",
+            "Platform reliability, operations, obs",
+            "Methods for dealing with scale",
+            null
+          ]
+        },
+        "is_contributor_issue": {
+          "type": "boolean"
+        },
+        "reasoning": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}
