@@ -105,8 +105,8 @@ Screening is the agent's strategy for staying within the 15-minute harness timeo
 
 1. Fetches all open issue **metadata** in one API call (`gh issue list` — fast, returns titles/labels/authors)
 2. Uses title and label signals to identify **candidates** worth a deeper look
-3. Fetches full **bodies** only for candidates (`gh issue view` — one API call per issue, ~1s each)
-4. Classifies based on title + body + labels
+3. Fetches full **bodies and comments** for candidates (`gh issue view` with `comments` field — one API call per issue, ~1s each)
+4. Classifies based on title + body + comments + labels
 
 Without screening, evaluating all 228 open issues would require ~228 individual API calls plus LLM reasoning time — roughly 21 minutes, exceeding the timeout.
 
