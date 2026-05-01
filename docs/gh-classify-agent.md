@@ -133,6 +133,169 @@ All modes support `dry_run=true`. In dry-run mode:
 - The post-script produces a full report showing what *would* have been done
 - The report and agent transcript are saved as GitHub Actions artifacts
 
+## How to trigger
+
+Every variation can be triggered from the GitHub Actions UI or the `gh` CLI. Replace `YOUR-ORG/.fullsend` with your `.fullsend` repo and `owner/repo` with your source repository.
+
+### GitHub Actions UI
+
+Navigate to **Actions > GitHub Issue Classify > Run workflow** in your `.fullsend` repo. Fill in the form inputs described in each variation below.
+
+### Variation 1 — Dry-run all unclassified issues (default, with screening)
+
+Preview what the agent *would* classify without making any changes. Screening reduces runtime by skipping issues whose titles clearly don't match.
+
+**UI:** Run workflow with defaults. Set `dry_run = true`.
+
+**CLI:**
+
+```bash
+gh workflow run gh-classify.yml --repo YOUR-ORG/.fullsend \
+  -f source_repo="owner/repo" \
+  -f classify_mode="unclassified" \
+  -f dry_run="true"
+```
+
+**Expected time:** ~5–8 minutes
+
+### Variation 2 — Dry-run all unclassified, no screening (thorough)
+
+Same as variation 1 but the agent fetches full details for every unclassified issue. Use when you want to validate that screening isn't missing anything.
+
+**UI:** Same as variation 1, but set `screen_issues = false`.
+
+**CLI:**
+
+```bash
+gh workflow run gh-classify.yml --repo YOUR-ORG/.fullsend \
+  -f source_repo="owner/repo" \
+  -f classify_mode="unclassified" \
+  -f dry_run="true" \
+  -f screen_issues="false"
+```
+
+**Expected time:** ~9–12 minutes
+
+### Variation 3 — Dry-run a single category
+
+Only classify issues into one specific category. Issues that don't match get `null`. Useful for workstream leads reviewing their own category.
+
+**UI:** Set `filter_category` to the exact category name (e.g., `New agent capability`), `dry_run = true`.
+
+**CLI:**
+
+```bash
+gh workflow run gh-classify.yml --repo YOUR-ORG/.fullsend \
+  -f source_repo="owner/repo" \
+  -f classify_mode="unclassified" \
+  -f dry_run="true" \
+  -f filter_category="New agent capability"
+```
+
+**Expected time:** ~3–8 minutes
+
+### Variation 4 — Dry-run a single category, no screening
+
+Thorough evaluation of all unclassified issues for one category.
+
+**UI:** Set `filter_category`, `dry_run = true`, `screen_issues = false`.
+
+**CLI:**
+
+```bash
+gh workflow run gh-classify.yml --repo YOUR-ORG/.fullsend \
+  -f source_repo="owner/repo" \
+  -f classify_mode="unclassified" \
+  -f dry_run="true" \
+  -f filter_category="New agent capability" \
+  -f screen_issues="false"
+```
+
+**Expected time:** ~9–12 minutes
+
+### Variation 5 — Classify a single issue
+
+Classify one specific issue by number. Used by the auto-trigger on `issues.opened` and for manual re-classification.
+
+**UI:** Set `classify_mode = single`, `issue_number` to the issue number.
+
+**CLI:**
+
+```bash
+gh workflow run gh-classify.yml --repo YOUR-ORG/.fullsend \
+  -f source_repo="owner/repo" \
+  -f classify_mode="single" \
+  -f issue_number="42"
+```
+
+**Expected time:** ~30–60 seconds
+
+### Variation 6 — Live run: classify all unclassified issues
+
+Actually set project field values on the board. **Review dry-run output first.**
+
+**UI:** Set `dry_run = false` (the default).
+
+**CLI:**
+
+```bash
+gh workflow run gh-classify.yml --repo YOUR-ORG/.fullsend \
+  -f source_repo="owner/repo" \
+  -f classify_mode="unclassified" \
+  -f dry_run="false"
+```
+
+**Expected time:** ~5–8 minutes + ~1 second per classified issue for API writes
+
+### Variation 7 — Live run: re-classify ALL open issues
+
+**Use with caution.** Evaluates every open issue regardless of existing classification. Will overwrite existing project field values.
+
+**UI:** Set `classify_mode = all`, `dry_run = false`.
+
+**CLI:**
+
+```bash
+gh workflow run gh-classify.yml --repo YOUR-ORG/.fullsend \
+  -f source_repo="owner/repo" \
+  -f classify_mode="all" \
+  -f dry_run="false"
+```
+
+**Expected time:** ~10–15 minutes
+
+### Variation 8 — Local execution with fullsend CLI
+
+Run from your machine using the `fullsend` CLI. Source your `.env.gh-classify` first.
+
+```bash
+set -a; source .env.gh-classify; set +a
+
+# Dry-run all unclassified
+CLASSIFY_DRY_RUN=true fullsend run gh-classify --fullsend-dir /path/to/.fullsend --target-repo .
+
+# Single category, no screening
+CLASSIFY_DRY_RUN=true CLASSIFY_FILTER_CATEGORY="Bug fixes" CLASSIFY_SCREEN_ISSUES=false \
+  fullsend run gh-classify --fullsend-dir /path/to/.fullsend --target-repo .
+
+# Single issue
+CLASSIFY_MODE=single CLASSIFY_ISSUE_NUMBER=42 \
+  fullsend run gh-classify --fullsend-dir /path/to/.fullsend --target-repo .
+```
+
+### Quick reference table
+
+| # | Mode | Dry run | Filter | Screening | CLI flags |
+|---|------|---------|--------|-----------|-----------|
+| 1 | unclassified | yes | — | on | `-f dry_run=true` |
+| 2 | unclassified | yes | — | off | `-f dry_run=true -f screen_issues=false` |
+| 3 | unclassified | yes | category | on | `-f dry_run=true -f filter_category="..."` |
+| 4 | unclassified | yes | category | off | `-f dry_run=true -f filter_category="..." -f screen_issues=false` |
+| 5 | single | no | — | n/a | `-f classify_mode=single -f issue_number=42` |
+| 6 | unclassified | no | — | on | (defaults) |
+| 7 | all | no | — | on | `-f classify_mode=all` |
+| 8 | local | — | — | — | `fullsend run gh-classify` |
+
 ## Configuration reference
 
 ### GitHub Actions variables (set on `.fullsend` repo)
@@ -185,8 +348,8 @@ Enrolled repo (your-org/your-repo)
       │   ├─ SCP host_files into sandbox
       │   ├─ Agent (gh-classify.md) runs inside sandbox
       │   │   ├─ Load categories document
-      │   │   ├─ Fetch issue list
-      │   │   ├─ Screen candidates (batch modes only)
+      │   │   ├─ Build candidate list (fetch issues, exclude already classified)
+      │   │   ├─ Screen candidates (batch modes only, if enabled)
       │   │   ├─ Fetch candidate bodies + comments
       │   │   ├─ Classify each issue
       │   │   └─ Write agent-result.json
