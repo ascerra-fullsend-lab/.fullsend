@@ -358,11 +358,18 @@ if [[ ${#FILTER_MISMATCH_LINES[@]} -gt 0 ]]; then
   echo ""
 fi
 
-# --- Display: Unclassifiable (agent returned null) ---
+# --- Display: Unclassifiable / belongs elsewhere (agent returned null) ---
 if [[ ${#SKIPPED_LINES[@]} -gt 0 ]]; then
-  echo "UNCLASSIFIABLE (${#SKIPPED_LINES[@]} issues)"
-  echo "------------------------------------------------------------"
-  printf '  Agent could not confidently assign any category\n'
+  if [[ -n "${FILTER_CATEGORY}" ]]; then
+    echo "LIKELY BELONGS ELSEWHERE (${#SKIPPED_LINES[@]} issues)"
+    echo "------------------------------------------------------------"
+    printf '  Agent believes these belong in a different category,\n'
+    printf '  not "%s" — confidence reflects certainty of mismatch\n' "${FILTER_CATEGORY}"
+  else
+    echo "UNCLASSIFIABLE (${#SKIPPED_LINES[@]} issues)"
+    echo "------------------------------------------------------------"
+    printf '  Agent could not confidently assign any category\n'
+  fi
   for line in "${SKIPPED_LINES[@]}"; do
     echo "${line}"
   done
