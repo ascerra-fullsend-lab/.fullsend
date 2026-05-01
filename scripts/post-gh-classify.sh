@@ -4,7 +4,6 @@
 # Runs on the host after sandbox cleanup. Reads the agent's JSON output and:
 # 1. Adds issues to the GitHub Project if not already present
 # 2. Sets the Workstream Category field value on classified issues
-# 3. Adds the "contributor" label to issues from non-core-team authors
 #
 # In dry-run mode, no writes are performed. A structured report is written
 # to output/classify-report.json and a markdown summary is written to the
@@ -16,8 +15,6 @@
 #   CLASSIFY_MIN_CONFIDENCE — minimum confidence to apply classification (default: 0.7)
 #
 # SECURITY:
-# - Uses the labels API directly (POST /issues/{number}/labels) instead of
-#   gh issue edit to avoid firing issues.edited events.
 # - Never logs tokens, credentials, or issue body content.
 # - The classify-report.json artifact contains only issue numbers, categories,
 #   and sanitized reasoning — no issue bodies, tokens, or credentials.
@@ -64,7 +61,7 @@ PROJECT_ID=$(jq -r '.project_id // empty' "${CONTEXT_DIR}/project-meta.json")
 FIELD_ID=$(jq -r '.field_id // empty' "${CONTEXT_DIR}/project-meta.json")
 
 if [[ -z "${PROJECT_ID}" || -z "${FIELD_ID}" ]]; then
-  echo "WARNING: Project metadata incomplete — will apply labels but skip project field updates."
+  echo "WARNING: Project metadata incomplete — will skip project field updates."
 fi
 
 REPO="${CLASSIFY_SOURCE_REPO}"
@@ -87,7 +84,6 @@ lookup_title() {
 AGENT_EVALUATED=$(jq '.issues | length' "${RESULT_FILE}")
 CLASSIFIED=0
 SKIPPED=0
-LABELED=0
 ERRORS=0
 NOT_EVALUATED=0
 
@@ -121,20 +117,6 @@ if [[ -n "${FILTER_CATEGORY}" ]]; then
 fi
 echo "------------------------------------------------------------"
 echo ""
-
-add_label() {
-  local issue_number="$1"
-  local label="$2"
-  if [[ "${DRY_RUN}" == "true" ]]; then
-    return 0
-  fi
-  if ! gh api "repos/${REPO}/issues/${issue_number}/labels" \
-    -f "labels[]=${label}" --silent 2>/dev/null; then
-    echo "  ⚠ Failed to add label '${label}' to #${issue_number}"
-    return 1
-  fi
-  return 0
-}
 
 set_project_field() {
   local issue_number="$1"
@@ -252,7 +234,6 @@ SKIPPED_LINES=()
 for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   ISSUE_NUM=$(jq -r ".issues[${i}].issue_number" "${RESULT_FILE}")
   CATEGORY=$(jq -r ".issues[${i}].workstream_category // empty" "${RESULT_FILE}")
-  IS_CONTRIBUTOR=$(jq -r ".issues[${i}].is_contributor_issue" "${RESULT_FILE}")
   CONFIDENCE=$(jq -r ".issues[${i}].confidence" "${RESULT_FILE}")
   REASONING=$(jq -r ".issues[${i}].reasoning" "${RESULT_FILE}")
 
@@ -262,19 +243,6 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   # All API calls below are scoped to REPO (repos/${REPO}/issues/...).
   # Cross-repo writes are impossible — GitHub returns 404 for issue numbers
   # that don't exist in the target repo.
-
-  LABEL_ACTION="none"
-  if [[ "${IS_CONTRIBUTOR}" == "true" ]]; then
-    if add_label "${ISSUE_NUM}" "contributor"; then
-      ((LABELED++)) || true
-      if [[ "${DRY_RUN}" == "true" ]]; then
-        LABEL_ACTION="would-add"
-      else
-        LABEL_ACTION="added"
-      fi
-      ACTIONS_TAKEN="label:contributor"
-    fi
-  fi
 
   # Safety net: if filter is active and agent returned a non-matching category, treat as null.
   if [[ -n "${FILTER_CATEGORY}" && -n "${CATEGORY}" && "${CATEGORY}" != "null" && "${CATEGORY}" != "${FILTER_CATEGORY}" ]]; then
@@ -309,18 +277,13 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
     CATEGORY_ACTION="unclassifiable"
   fi
 
-  CONTRIB_TAG=""
-  if [[ "${IS_CONTRIBUTOR}" == "true" ]]; then
-    CONTRIB_TAG="  *contributor*"
-  fi
-
   ISSUE_TITLE=$(lookup_title "${ISSUE_NUM}")
   CONF_PCT=$(printf '%.0f' "$(echo "${CONFIDENCE} * 100" | bc -l)")
 
   if [[ "${ISSUE_STATUS}" == "classified" ]]; then
-    CLASSIFIED_LINES+=("$(printf '  #%-4s  %3s%%  %s%s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}" "${CONTRIB_TAG}")")
+    CLASSIFIED_LINES+=("$(printf '  #%-4s  %3s%%  %s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}")")
   elif [[ "${ISSUE_STATUS}" == "error" ]]; then
-    CLASSIFIED_LINES+=("$(printf '  #%-4s  ERR   %s%s' "${ISSUE_NUM}" "${ISSUE_TITLE}" "${CONTRIB_TAG}")")
+    CLASSIFIED_LINES+=("$(printf '  #%-4s  ERR   %s' "${ISSUE_NUM}" "${ISSUE_TITLE}")")
   else
     SKIPPED_LINES+=("$(printf '  #%-4s  %3s%%  %s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}")")
   fi
@@ -330,18 +293,14 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   jq --argjson num "${ISSUE_NUM}" \
     --arg cat "${CATEGORY}" \
     --arg cat_action "${CATEGORY_ACTION}" \
-    --arg lbl_action "${LABEL_ACTION}" \
     --arg status "${ISSUE_STATUS}" \
     --arg conf "${CONFIDENCE}" \
     --arg reason "${SAFE_REASONING}" \
-    --arg is_contrib "${IS_CONTRIBUTOR}" \
     '. += [{
       issue_number: $num,
       status: $status,
       workstream_category: (if $cat == "" or $cat == "null" then null else $cat end),
       category_action: $cat_action,
-      label_action: $lbl_action,
-      is_contributor: ($is_contrib == "true"),
       confidence: ($conf | tonumber),
       reasoning: $reason
     }]' "${REPORT_FILE}" > "${REPORT_FILE}.tmp" && mv "${REPORT_FILE}.tmp" "${REPORT_FILE}"
@@ -403,7 +362,6 @@ if [[ ${ERRORS} -gt 0 ]]; then
   printf '    Errors:           %s\n' "${ERRORS}"
 fi
 printf '  Screened out:       %s\n' "${NOT_EVALUATED}"
-printf '  Contributor labels: %s\n' "${LABELED}"
 if [[ "${DRY_RUN}" == "true" ]]; then
   echo "------------------------------------------------------------"
   echo "  DRY RUN -- no changes were written to GitHub"
@@ -439,7 +397,6 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "| Screened out | ${NOT_EVALUATED} |"
     echo "| Classified | ${CLASSIFIED} |"
     echo "| Skipped (low conf) | ${SKIPPED} |"
-    echo "| Contributor labels | ${LABELED} |"
     echo "| Errors | ${ERRORS} |"
     echo ""
     echo "**Confidence threshold:** ${THRESHOLD_PCT}%"
@@ -454,7 +411,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "|------:|----------|:----------:|--------|"
     jq -r '
       .[] | select(.status == "classified") |
-      "| #\(.issue_number) | \(.workstream_category // "—") | \((.confidence * 100) | floor)% | \(.category_action)\(if .is_contributor then " · contributor" else "" end) |"
+      "| #\(.issue_number) | \(.workstream_category // "—") | \((.confidence * 100) | floor)% | \(.category_action) |"
     ' "${REPORT_FILE}" 2>/dev/null || echo "| — | — | — | — |"
     echo ""
     echo "### Skipped issues (below threshold)"

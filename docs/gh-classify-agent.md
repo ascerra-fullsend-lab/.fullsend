@@ -1,6 +1,6 @@
 # GitHub Issue Classify Agent (gh-classify)
 
-The gh-classify agent reads GitHub issues and assigns each one to the most appropriate category defined by the organization's categories document. It also labels issues filed by non-core-team members as `contributor`.
+The gh-classify agent reads GitHub issues and assigns each one to the most appropriate category defined by the organization's categories document.
 
 This agent is **optional** — it is not included in the default `fullsend admin install` role set. Organizations opt in by adding `gh-classify` to their `--agents` list during installation.
 
@@ -23,9 +23,6 @@ fullsend admin install --agents fullsend,triage,coder,review,gh-classify
 Then set the required variables:
 
 ```bash
-# Required: who is core team (comma-separated GitHub usernames)
-gh variable set FULLSEND_GH_CLASSIFY_CORE_TEAM --repo YOUR-ORG/.fullsend --body "user1,user2,user3"
-
 # Required: path to your categories doc (relative to .fullsend repo root)
 gh variable set FULLSEND_GH_CLASSIFY_CATEGORIES_PATH --repo YOUR-ORG/.fullsend --body "docs/categories.md"
 
@@ -74,7 +71,7 @@ The agent reads this document at runtime and uses the category names as the only
 |---|---|
 | **Trigger** | `issues.opened` event via shim dispatch |
 | **Mode** | `single` |
-| **What happens** | Agent fetches the single issue, classifies it, sets the project field, and optionally adds a `contributor` label |
+| **What happens** | Agent fetches the single issue, classifies it, and sets the project field |
 | **Screening** | None — one issue, no batch processing |
 | **Expected time** | 30–60 seconds |
 
@@ -132,7 +129,7 @@ CLASSIFY_MODE=all fullsend run gh-classify
 All modes support `dry_run=true`. In dry-run mode:
 
 - The agent runs identically (same API calls, same LLM evaluation)
-- No labels are added, no project fields are set
+- No project fields are set
 - The post-script produces a full report showing what *would* have been done
 - The report and agent transcript are saved as GitHub Actions artifacts
 
@@ -142,7 +139,6 @@ All modes support `dry_run=true`. In dry-run mode:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `FULLSEND_GH_CLASSIFY_CORE_TEAM` | Yes | Comma-separated GitHub usernames of core team |
 | `FULLSEND_GH_CLASSIFY_CATEGORIES_PATH` | Yes | Path to categories doc (relative to `.fullsend` root) |
 | `FULLSEND_GH_CLASSIFY_PROJECT_NUMBER` | Yes | GitHub Project V2 number |
 | `FULLSEND_GH_CLASSIFY_FIELD_NAME` | Yes | Name of the single-select classification field |
@@ -192,7 +188,7 @@ Enrolled repo (your-org/your-repo)
       │   │   └─ Write agent-result.json
       │   ├─ Validate output against schema
       │   └─ Redact secrets from transcript
-      └─ post-gh-classify.sh (host: apply labels, set project fields, write report)
+      └─ post-gh-classify.sh (host: set project fields, write report)
 ```
 
 ## Open items

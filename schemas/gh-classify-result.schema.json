@@ -19,7 +19,7 @@
     "classification": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["issue_number", "workstream_category", "is_contributor_issue", "reasoning", "confidence"],
+      "required": ["issue_number", "workstream_category", "reasoning", "confidence"],
       "properties": {
         "issue_number": {
           "type": "integer",
@@ -28,9 +28,6 @@
         "workstream_category": {
           "type": ["string", "null"],
           "description": "Must match one of the category names from the organization's categories document, or null if no confident match."
-        },
-        "is_contributor_issue": {
-          "type": "boolean"
         },
         "reasoning": {
           "type": "string",

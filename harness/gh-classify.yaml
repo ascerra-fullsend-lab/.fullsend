@@ -19,7 +19,8 @@ host_files:
     dest: /tmp/workspace/categories.md
     optional: true
 
-skills: []
+skills:
+  - skills/issue-classification
 
 pre_script: scripts/pre-gh-classify.sh
 
@@ -33,7 +34,6 @@ runner_env:
   GH_TOKEN: ${GH_TOKEN}
   CLASSIFY_SOURCE_REPO: ${CLASSIFY_SOURCE_REPO}
   CLASSIFY_MODE: ${CLASSIFY_MODE}
-  CLASSIFY_CORE_TEAM: ${CLASSIFY_CORE_TEAM}
   CLASSIFY_FILTER_CATEGORY: ${CLASSIFY_FILTER_CATEGORY}
   CLASSIFY_CATEGORIES_PATH: ${CLASSIFY_CATEGORIES_PATH}
   CLASSIFY_PROJECT_TOKEN: ${CLASSIFY_PROJECT_TOKEN}

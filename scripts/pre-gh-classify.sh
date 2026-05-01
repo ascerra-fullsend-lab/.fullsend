@@ -11,7 +11,6 @@
 #   CLASSIFY_SOURCE_REPO  — owner/repo to classify issues in
 #   CLASSIFY_MODE         — "single" | "unclassified" | "all"
 #   CLASSIFY_ISSUE_NUMBER — (single mode) specific issue number to classify
-#   CLASSIFY_CORE_TEAM    — comma-separated core team usernames
 #   CLASSIFY_PROJECT_NUMBER — GitHub Project number for the org
 #   CLASSIFY_FIELD_NAME   — name of the Workstream Category field in the project
 #
