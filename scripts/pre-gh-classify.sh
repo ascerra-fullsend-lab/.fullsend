@@ -19,6 +19,13 @@
 
 set -euo pipefail
 
+# Normalize sentinel values used to satisfy fullsend runner_env validation.
+# The runner rejects empty env vars, so the workflow provides non-empty
+# sentinels for optional vars. Convert them back to empty here.
+[[ "${CLASSIFY_FILTER_CATEGORY:-}" == "__all__" ]] && CLASSIFY_FILTER_CATEGORY=""
+[[ "${CLASSIFY_PROJECT_TOKEN:-}" == "__none__" ]] && CLASSIFY_PROJECT_TOKEN=""
+[[ "${CLASSIFY_ISSUE_NUMBER:-}" == "0" ]] && CLASSIFY_ISSUE_NUMBER=""
+
 CONTEXT_DIR="/tmp/workspace/context"
 mkdir -p "${CONTEXT_DIR}"
 

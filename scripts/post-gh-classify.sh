@@ -21,6 +21,11 @@
 
 set -euo pipefail
 
+# Normalize sentinel values (see pre-script for explanation).
+[[ "${CLASSIFY_FILTER_CATEGORY:-}" == "__all__" ]] && CLASSIFY_FILTER_CATEGORY=""
+[[ "${CLASSIFY_PROJECT_TOKEN:-}" == "__none__" ]] && CLASSIFY_PROJECT_TOKEN=""
+[[ "${CLASSIFY_ISSUE_NUMBER:-}" == "0" ]] && CLASSIFY_ISSUE_NUMBER=""
+
 MIN_CONFIDENCE="${CLASSIFY_MIN_CONFIDENCE:-0.7}"
 CONTEXT_DIR="/tmp/workspace/context"
 DRY_RUN="${CLASSIFY_DRY_RUN:-false}"
@@ -381,8 +386,12 @@ ALREADY_CLASSIFIED=0
 SCREENED_OUT=0
 
 CANDIDATE_NUMBERS_FILE="${CONTEXT_DIR}/issue-numbers.txt"
+CURRENT_MODE="${CLASSIFY_MODE:-unclassified}"
+
 if [[ -f "${ISSUES_FILE}" ]]; then
-  if [[ -f "${CANDIDATE_NUMBERS_FILE}" ]]; then
+  if [[ "${CURRENT_MODE}" == "single" ]]; then
+    : # Single mode: one specific issue was targeted, "already classified" is N/A
+  elif [[ -f "${CANDIDATE_NUMBERS_FILE}" ]]; then
     CANDIDATE_COUNT=$(wc -l < "${CANDIDATE_NUMBERS_FILE}" | tr -d ' ')
     ALREADY_CLASSIFIED=$((ALL_OPEN_COUNT - CANDIDATE_COUNT))
 
@@ -426,11 +435,15 @@ NOT_EVALUATED=$((ALREADY_CLASSIFIED + SCREENED_OUT))
 echo "============================================================"
 echo "  SUMMARY"
 echo "============================================================"
-printf '  Open issues:        %s\n' "${ALL_OPEN_COUNT}"
-if [[ ${ALREADY_CLASSIFIED} -gt 0 ]]; then
-  printf '  Already classified: %s\n' "${ALREADY_CLASSIFIED}"
+if [[ "${CURRENT_MODE}" == "single" ]]; then
+  printf '  Mode:               single (issue #%s)\n' "${CLASSIFY_ISSUE_NUMBER:-?}"
+else
+  printf '  Open issues:        %s\n' "${ALL_OPEN_COUNT}"
+  if [[ ${ALREADY_CLASSIFIED} -gt 0 ]]; then
+    printf '  Already classified: %s\n' "${ALREADY_CLASSIFIED}"
+  fi
+  printf '  Candidates:         %s\n' "$((ALL_OPEN_COUNT - ALREADY_CLASSIFIED))"
 fi
-printf '  Candidates:         %s\n' "$((ALL_OPEN_COUNT - ALREADY_CLASSIFIED))"
 printf '  Agent evaluated:    %s\n' "${AGENT_EVALUATED}"
 printf '    Classified:       %s\n' "${CLASSIFIED}"
 printf '    Skipped:          %s\n' "${SKIPPED}"
@@ -468,11 +481,15 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     fi
     echo "| Metric | Count |"
     echo "|--------|------:|"
-    echo "| Total open issues | ${ALL_OPEN_COUNT} |"
-    if [[ ${ALREADY_CLASSIFIED} -gt 0 ]]; then
-      echo "| Already classified | ${ALREADY_CLASSIFIED} |"
+    if [[ "${CURRENT_MODE}" == "single" ]]; then
+      echo "| Mode | single (issue #${CLASSIFY_ISSUE_NUMBER:-?}) |"
+    else
+      echo "| Total open issues | ${ALL_OPEN_COUNT} |"
+      if [[ ${ALREADY_CLASSIFIED} -gt 0 ]]; then
+        echo "| Already classified | ${ALREADY_CLASSIFIED} |"
+      fi
+      echo "| Candidates | $((ALL_OPEN_COUNT - ALREADY_CLASSIFIED)) |"
     fi
-    echo "| Candidates | $((ALL_OPEN_COUNT - ALREADY_CLASSIFIED)) |"
     echo "| Agent evaluated | ${AGENT_EVALUATED} |"
     echo "| Screened out | ${SCREENED_OUT} |"
     echo "| Classified | ${CLASSIFIED} |"

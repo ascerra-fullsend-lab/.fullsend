@@ -44,6 +44,21 @@ them for exact-match comparison later.
 
 ## Step 2: Build the candidate list
 
+Check `CLASSIFY_MODE` and `CLASSIFY_ISSUE_NUMBER`:
+
+- **If `CLASSIFY_MODE` is `single` and `CLASSIFY_ISSUE_NUMBER` is set:**
+  Your candidate list is exactly ONE issue. Fetch only that issue:
+
+  ```bash
+  gh issue view "$CLASSIFY_ISSUE_NUMBER" --repo "$CLASSIFY_SOURCE_REPO" \
+    --json number,title,body,labels,author,createdAt,comments
+  ```
+
+  **Skip the rest of Step 2 and Step 3 entirely.** Go directly to Step 4
+  with this single issue as your only candidate.
+
+- **Otherwise (batch modes `unclassified` or `all`):**
+
 Fetch all open issues:
 
 ```bash
