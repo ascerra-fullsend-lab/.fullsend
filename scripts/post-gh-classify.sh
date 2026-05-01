@@ -238,6 +238,8 @@ set_project_field() {
 # --- Process all agent-evaluated issues (build arrays for display later) ---
 CLASSIFIED_LINES=()
 SKIPPED_LINES=()
+FILTER_MISMATCH_LINES=()
+BELOW_THRESHOLD_LINES=()
 
 for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   ISSUE_NUM=$(jq -r ".issues[${i}].issue_number" "${RESULT_FILE}")
@@ -253,7 +255,9 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   # that don't exist in the target repo.
 
   # Safety net: if filter is active and agent returned a non-matching category, treat as null.
+  FILTER_SKIPPED="false"
   if [[ -n "${FILTER_CATEGORY}" && -n "${CATEGORY}" && "${CATEGORY}" != "null" && "${CATEGORY}" != "${FILTER_CATEGORY}" ]]; then
+    FILTER_SKIPPED="true"
     CATEGORY=""
   fi
 
@@ -282,7 +286,11 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
     fi
   else
     ((SKIPPED++)) || true
-    CATEGORY_ACTION="unclassifiable"
+    if [[ "${FILTER_SKIPPED}" == "true" ]]; then
+      CATEGORY_ACTION="filter-mismatch"
+    else
+      CATEGORY_ACTION="unclassifiable"
+    fi
   fi
 
   ISSUE_TITLE=$(lookup_title "${ISSUE_NUM}")
@@ -292,6 +300,10 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
     CLASSIFIED_LINES+=("$(printf '  #%-4s  %3s%%  %s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}")")
   elif [[ "${ISSUE_STATUS}" == "error" ]]; then
     CLASSIFIED_LINES+=("$(printf '  #%-4s  ERR   %s' "${ISSUE_NUM}" "${ISSUE_TITLE}")")
+  elif [[ "${CATEGORY_ACTION}" == "filter-mismatch" ]]; then
+    FILTER_MISMATCH_LINES+=("$(printf '  #%-4s  %3s%%  %s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}")")
+  elif [[ "${CATEGORY_ACTION}" == "below-threshold" ]]; then
+    BELOW_THRESHOLD_LINES+=("$(printf '  #%-4s  %3s%%  %s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}")")
   else
     SKIPPED_LINES+=("$(printf '  #%-4s  %3s%%  %s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}")")
   fi
@@ -324,10 +336,33 @@ if [[ ${#CLASSIFIED_LINES[@]} -gt 0 ]]; then
   echo ""
 fi
 
-# --- Display: Skipped issues ---
-if [[ ${#SKIPPED_LINES[@]} -gt 0 ]]; then
-  echo "SKIPPED -- below ${THRESHOLD_PCT}% confidence (${#SKIPPED_LINES[@]} issues)"
+# --- Display: Below threshold ---
+if [[ ${#BELOW_THRESHOLD_LINES[@]} -gt 0 ]]; then
+  echo "BELOW ${THRESHOLD_PCT}% CONFIDENCE (${#BELOW_THRESHOLD_LINES[@]} issues)"
   echo "------------------------------------------------------------"
+  for line in "${BELOW_THRESHOLD_LINES[@]}"; do
+    echo "${line}"
+  done
+  echo ""
+fi
+
+# --- Display: Filter mismatch (agent classified into a different category) ---
+if [[ ${#FILTER_MISMATCH_LINES[@]} -gt 0 ]]; then
+  echo "NOT \"${FILTER_CATEGORY}\" (${#FILTER_MISMATCH_LINES[@]} issues)"
+  echo "------------------------------------------------------------"
+  printf '  Agent classified these into other categories — skipped because\n'
+  printf '  filter is restricted to "%s"\n' "${FILTER_CATEGORY}"
+  for line in "${FILTER_MISMATCH_LINES[@]}"; do
+    echo "${line}"
+  done
+  echo ""
+fi
+
+# --- Display: Unclassifiable (agent returned null) ---
+if [[ ${#SKIPPED_LINES[@]} -gt 0 ]]; then
+  echo "UNCLASSIFIABLE (${#SKIPPED_LINES[@]} issues)"
+  echo "------------------------------------------------------------"
+  printf '  Agent could not confidently assign any category\n'
   for line in "${SKIPPED_LINES[@]}"; do
     echo "${line}"
   done
