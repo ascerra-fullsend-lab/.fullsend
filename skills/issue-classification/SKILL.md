@@ -113,16 +113,25 @@ labels, and context against the category descriptions. Consider:
 ## Step 5: Write output
 
 Write `${FULLSEND_OUTPUT_DIR}/agent-result.json`. Only include issues
-you actually evaluated.
+you actually evaluated. The top-level key **must** be `"issues"`.
 
 ```bash
 mkdir -p "${FULLSEND_OUTPUT_DIR}"
 cat > "${FULLSEND_OUTPUT_DIR}/agent-result.json" << 'AGENT_RESULT_EOF'
-{ ... your JSON ... }
+{
+  "issues": [
+    {
+      "issue_number": 42,
+      "workstream_category": "Bug fixes",
+      "reasoning": "Issue reports a crash in the login flow.",
+      "confidence": 0.92
+    }
+  ]
+}
 AGENT_RESULT_EOF
 ```
 
-### Output fields
+### Output fields (each object in the `"issues"` array)
 
 - `issue_number`: integer
 - `workstream_category`: exact category name string or `null`
