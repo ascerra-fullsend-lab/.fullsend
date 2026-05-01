@@ -162,6 +162,9 @@ All modes support `dry_run=true`. In dry-run mode:
 | `CLASSIFY_FILTER_CATEGORY` | — | Restrict to a single category |
 | `CLASSIFY_SCREEN_ISSUES` | `true` | Screen by title/labels before fetching details |
 | `CLASSIFY_CATEGORIES_PATH` | `categories.md` | Path to the categories document |
+| `CLASSIFY_PROJECT_NUMBER` | `1` | GitHub Project number for category field lookup |
+| `CLASSIFY_FIELD_NAME` | `Workstream Category` | Name of the single-select project field |
+| `CLASSIFY_PROJECT_TOKEN` | `GH_TOKEN` | PAT for cross-org project access |
 
 ## Architecture
 

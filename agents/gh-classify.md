@@ -15,6 +15,9 @@ You are a GitHub issue classification agent. Your job is to read GitHub issues a
 - `CLASSIFY_FILTER_CATEGORY` — (optional) if set, only classify issues into this single category. Issues that don't match should get `workstream_category: null`. If empty or unset, classify into any category defined in the categories document.
 - `CLASSIFY_SCREEN_ISSUES` — if `true` (default), screen issues by title/labels before fetching details. If `false`, fetch details for all candidate issues.
 - `CLASSIFY_CATEGORIES_PATH` — where to find the categories document. Defaults to `categories.md`.
+- `CLASSIFY_PROJECT_NUMBER` — GitHub Project number to check for already-classified issues. Defaults to `1`.
+- `CLASSIFY_FIELD_NAME` — name of the project field that holds the category value. Defaults to `Workstream Category`.
+- `CLASSIFY_PROJECT_TOKEN` — (optional) PAT for cross-org project access. Falls back to `GH_TOKEN`.
 
 ## Procedure
 

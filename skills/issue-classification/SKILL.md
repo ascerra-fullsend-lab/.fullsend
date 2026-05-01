@@ -42,14 +42,54 @@ Parse the **exact category names** from the document headings. These are
 the only valid values for `workstream_category` in your output. Store
 them for exact-match comparison later.
 
-## Step 2: Fetch the issue list
+## Step 2: Build the candidate list
+
+Fetch all open issues:
 
 ```bash
 gh issue list --repo "$CLASSIFY_SOURCE_REPO" --state open \
   --json number,title,labels,author,createdAt --limit 5000
 ```
 
-This gives you metadata for all open issues.
+Then **exclude issues that are already classified** on the project
+board. The pre-script identifies these on the host, but you are in a
+sandbox and must discover them yourself. Query the project board to
+find issues that already have a workstream category assigned:
+
+```bash
+ORG="${CLASSIFY_SOURCE_REPO%%/*}"
+PROJECT_NUM="${CLASSIFY_PROJECT_NUMBER:-1}"
+FIELD="${CLASSIFY_FIELD_NAME:-Workstream Category}"
+TOKEN="${CLASSIFY_PROJECT_TOKEN:-$GH_TOKEN}"
+
+CLASSIFIED=$(GH_TOKEN="$TOKEN" gh api graphql --paginate -f query='
+  query($org: String!, $num: Int!, $fieldName: String!, $endCursor: String) {
+    organization(login: $org) {
+      projectV2(number: $num) {
+        items(first: 100, after: $endCursor) {
+          nodes {
+            content { ... on Issue { number repository { nameWithOwner } } }
+            fieldValueByName(name: $fieldName) {
+              ... on ProjectV2ItemFieldSingleSelectValue { name }
+            }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }' -f org="$ORG" -F num="$PROJECT_NUM" -f fieldName="$FIELD" \
+  --jq '.data.organization.projectV2.items.nodes[]
+    | select(.content.repository.nameWithOwner == env.CLASSIFY_SOURCE_REPO)
+    | select(.fieldValueByName.name != null and .fieldValueByName.name != "")
+    | .content.number' 2>/dev/null | sort -n || true)
+```
+
+If the project query fails (permissions, network), log a warning and
+continue with the full issue list — the post-script will prevent
+duplicate writes regardless.
+
+Remove any issue whose number appears in `$CLASSIFIED` from your
+candidate list. Only evaluate issues that are **not already classified**.
 
 ## Step 3: Screen candidates
 
