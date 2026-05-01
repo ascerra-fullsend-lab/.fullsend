@@ -220,5 +220,6 @@ jobs:
           CLASSIFY_FIELD_NAME: ${{ vars.FULLSEND_WORKSTREAM_FIELD_NAME }}
           CLASSIFY_FILTER_CATEGORY: ${{ steps.params.outputs.filter_category }}
           CLASSIFY_CATEGORIES_PATH: ${{ vars.FULLSEND_CATEGORIES_PATH || 'docs/workstream-categories.md' }}
+          CLASSIFY_PROJECT_TOKEN: ${{ secrets.FULLSEND_PROJECT_PAT }}
         with:
           agent: classify
