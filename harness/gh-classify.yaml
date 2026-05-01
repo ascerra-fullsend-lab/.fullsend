@@ -1,7 +1,7 @@
-agent: agents/classify.md
+agent: agents/gh-classify.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: policies/classify.yaml
+policy: policies/gh-classify.yaml
 
 host_files:
   - src: env/gcp-vertex.env
@@ -12,21 +12,22 @@ host_files:
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /tmp/workspace/.gcp-oidc-token
     optional: true
-  - src: env/classify.env
-    dest: /tmp/workspace/.env.d/classify.env
+  - src: env/gh-classify.env
+    dest: /tmp/workspace/.env.d/gh-classify.env
     expand: true
-  - src: docs/workstream-categories.md
-    dest: /tmp/workspace/workstream-categories.md
+  - src: ${CLASSIFY_CATEGORIES_PATH}
+    dest: /tmp/workspace/categories.md
+    optional: true
 
 skills: []
 
-pre_script: scripts/pre-classify.sh
+pre_script: scripts/pre-gh-classify.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
   max_iterations: 2
 
-post_script: scripts/post-classify.sh
+post_script: scripts/post-gh-classify.sh
 
 runner_env:
   GH_TOKEN: ${GH_TOKEN}
@@ -36,6 +37,6 @@ runner_env:
   CLASSIFY_FILTER_CATEGORY: ${CLASSIFY_FILTER_CATEGORY}
   CLASSIFY_CATEGORIES_PATH: ${CLASSIFY_CATEGORIES_PATH}
   CLASSIFY_PROJECT_TOKEN: ${CLASSIFY_PROJECT_TOKEN}
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/classify-result.schema.json
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/gh-classify-result.schema.json
 
 timeout_minutes: 15

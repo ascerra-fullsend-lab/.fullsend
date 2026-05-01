@@ -1,4 +1,4 @@
-name: Classify
+name: GitHub Issue Classify
 
 on:
   workflow_dispatch:
@@ -48,11 +48,11 @@ on:
         type: string
 
 concurrency:
-  group: fullsend-classify-${{ inputs.classify_mode }}-${{ inputs.issue_number || 'batch' }}
+  group: fullsend-gh-classify-${{ inputs.classify_mode }}-${{ inputs.issue_number || 'batch' }}
   cancel-in-progress: true
 
 jobs:
-  classify:
+  gh-classify:
     name: Classify Issues
     runs-on: ubuntu-latest
     permissions:
@@ -89,7 +89,12 @@ jobs:
           elif [[ -n "${INPUT_EVENT_PAYLOAD}" ]]; then
             SOURCE_REPO=$(printf '%s' "${INPUT_EVENT_PAYLOAD}" | jq -r '.repository // empty' 2>/dev/null || echo "")
           fi
-          SOURCE_REPO="${SOURCE_REPO:-$GITHUB_REPOSITORY_OWNER/fullsend}"
+
+          # Default: use first enabled repo from config, not a hardcoded name.
+          if [[ -z "${SOURCE_REPO:-}" ]]; then
+            FIRST_REPO=$(yq '.repos | to_entries[] | select(.value.enabled == true) | .key' config.yaml 2>/dev/null | head -1)
+            SOURCE_REPO="${GITHUB_REPOSITORY_OWNER}/${FIRST_REPO:-}"
+          fi
 
           # Validate source_repo format before using it.
           if [[ ! "${SOURCE_REPO}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
@@ -156,8 +161,8 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          client-id: ${{ vars.FULLSEND_CLASSIFY_CLIENT_ID }}
-          private-key: ${{ secrets.FULLSEND_CLASSIFY_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.FULLSEND_GH_CLASSIFY_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_GH_CLASSIFY_APP_PRIVATE_KEY || secrets.FULLSEND_CLASSIFY_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
       - name: Authenticate to Google Cloud (WIF)
@@ -194,13 +199,13 @@ jobs:
           CLASSIFY_ISSUE_NUMBER: ${{ steps.params.outputs.issue_number }}
           CLASSIFY_DRY_RUN: ${{ steps.params.outputs.dry_run }}
           CLASSIFY_MIN_CONFIDENCE: ${{ steps.params.outputs.min_confidence }}
-          CLASSIFY_CORE_TEAM: ${{ vars.FULLSEND_CORE_TEAM }}
-          CLASSIFY_PROJECT_NUMBER: ${{ vars.FULLSEND_PROJECT_NUMBER }}
-          CLASSIFY_FIELD_NAME: ${{ vars.FULLSEND_WORKSTREAM_FIELD_NAME }}
+          CLASSIFY_CORE_TEAM: ${{ vars.FULLSEND_GH_CLASSIFY_CORE_TEAM }}
+          CLASSIFY_PROJECT_NUMBER: ${{ vars.FULLSEND_GH_CLASSIFY_PROJECT_NUMBER }}
+          CLASSIFY_FIELD_NAME: ${{ vars.FULLSEND_GH_CLASSIFY_FIELD_NAME }}
           CLASSIFY_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           CLASSIFY_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
           CLASSIFY_FILTER_CATEGORY: ${{ steps.params.outputs.filter_category }}
-          CLASSIFY_CATEGORIES_PATH: ${{ vars.FULLSEND_CATEGORIES_PATH || 'docs/workstream-categories.md' }}
+          CLASSIFY_CATEGORIES_PATH: ${{ vars.FULLSEND_GH_CLASSIFY_CATEGORIES_PATH || 'categories.md' }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Prepare target-repo placeholder
@@ -215,11 +220,11 @@ jobs:
           CLASSIFY_ISSUE_NUMBER: ${{ steps.params.outputs.issue_number }}
           CLASSIFY_DRY_RUN: ${{ steps.params.outputs.dry_run }}
           CLASSIFY_MIN_CONFIDENCE: ${{ steps.params.outputs.min_confidence }}
-          CLASSIFY_CORE_TEAM: ${{ vars.FULLSEND_CORE_TEAM }}
-          CLASSIFY_PROJECT_NUMBER: ${{ vars.FULLSEND_PROJECT_NUMBER }}
-          CLASSIFY_FIELD_NAME: ${{ vars.FULLSEND_WORKSTREAM_FIELD_NAME }}
+          CLASSIFY_CORE_TEAM: ${{ vars.FULLSEND_GH_CLASSIFY_CORE_TEAM }}
+          CLASSIFY_PROJECT_NUMBER: ${{ vars.FULLSEND_GH_CLASSIFY_PROJECT_NUMBER }}
+          CLASSIFY_FIELD_NAME: ${{ vars.FULLSEND_GH_CLASSIFY_FIELD_NAME }}
           CLASSIFY_FILTER_CATEGORY: ${{ steps.params.outputs.filter_category }}
-          CLASSIFY_CATEGORIES_PATH: ${{ vars.FULLSEND_CATEGORIES_PATH || 'docs/workstream-categories.md' }}
-          CLASSIFY_PROJECT_TOKEN: ${{ secrets.FULLSEND_PROJECT_PAT }}
+          CLASSIFY_CATEGORIES_PATH: ${{ vars.FULLSEND_GH_CLASSIFY_CATEGORIES_PATH || 'categories.md' }}
+          CLASSIFY_PROJECT_TOKEN: ${{ secrets.FULLSEND_GH_CLASSIFY_PROJECT_PAT }}
         with:
-          agent: classify
+          agent: gh-classify

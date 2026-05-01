@@ -73,7 +73,7 @@ jobs:
             --field source_repo="$SOURCE_REPO" \
             --field event_payload="$EVENT_PAYLOAD"
 
-  dispatch-classify:
+  dispatch-gh-classify:
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'issues' && github.event.action == 'opened'
@@ -93,7 +93,7 @@ jobs:
             --arg repo "${{ github.repository }}" \
             '{issue: {number: (if $in != "" then ($in | tonumber) else null end), html_url: (if $iu != "" then $iu else null end), author: $au}, repository: $repo}')
           echo "json=$PAYLOAD" >> "$GITHUB_OUTPUT"
-      - name: Dispatch classify
+      - name: Dispatch gh-classify
         env:
           GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
           EVENT_PAYLOAD: ${{ steps.payload.outputs.json }}
@@ -101,7 +101,7 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
           DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
         run: |
-          gh workflow run classify.yml \
+          gh workflow run gh-classify.yml \
             --repo "$DISPATCH_REPO" \
             --field event_type="$EVENT_TYPE" \
             --field source_repo="$SOURCE_REPO" \

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "classify-result.schema.json",
-  "title": "Classify Agent Result",
-  "description": "Structured output from the classify agent, validated by the harness before the post-script runs (ADR 0022).",
+  "$id": "gh-classify-result.schema.json",
+  "title": "GitHub Issue Classify Agent Result",
+  "description": "Structured output from the gh-classify agent, validated by the harness before the post-script runs (ADR 0022). Category values must match the organization's configured project field options.",
   "type": "object",
   "additionalProperties": false,
   "required": ["issues"],
@@ -27,18 +27,7 @@
         },
         "workstream_category": {
           "type": ["string", "null"],
-          "enum": [
-            "Support",
-            "Installer - web/cli",
-            "New agent capability",
-            "Docs",
-            "Agent dev, evals + security",
-            "Agent runtime architecture, evolve",
-            "Other platforms",
-            "Platform reliability, operations, obs",
-            "Methods for dealing with scale",
-            null
-          ]
+          "description": "Must match one of the category names from the organization's categories document, or null if no confident match."
         },
         "is_contributor_issue": {
           "type": "boolean"
