@@ -56,13 +56,15 @@ You have limited time. Do NOT call `gh issue view` on every issue. Instead:
 
 2. **If `CLASSIFY_FILTER_CATEGORY` is set**, only fetch details for issues whose title or labels suggest they might belong in that category. Skip issues that are obviously unrelated.
 
-3. **Fetch details only for candidates.** For each candidate:
+3. **Fetch details and comments for candidates.** For each candidate, fetch the issue body AND its comments:
 
 ```
-gh issue view <number> --repo "$CLASSIFY_SOURCE_REPO" --json number,title,body,labels,author,createdAt
+gh issue view <number> --repo "$CLASSIFY_SOURCE_REPO" --json number,title,body,labels,author,createdAt,comments
 ```
 
-You may batch multiple `gh issue view` calls to work efficiently.
+The `comments` field returns an array of `{author, body, createdAt}` objects. Comments often contain critical context — decisions, scope changes, clarifications, or re-framing that the original body lacks. Use comment content alongside title and body when classifying.
+
+You may batch multiple `gh issue view` calls to work efficiently. For issues with many comments, focus on the first few and last few comments (scope-setting and most recent decisions).
 
 4. **Determine contributor status from the issue list metadata.** You already have `author.login` from Step 2 — you do not need to `gh issue view` to check contributor status.
 
@@ -72,10 +74,11 @@ For each issue you evaluate, determine:
 
 1. **Is this a contributor issue?** — Check if `author.login` is NOT in the core team list. If the author is not core team, this is a contributor issue (`is_contributor_issue: true`).
 
-2. **Which workstream category fits best?** — Compare the issue's title, body, labels, and context against the category descriptions in `workstream-categories.md`. Consider:
+2. **Which workstream category fits best?** — Compare the issue's title, body, comments, labels, and context against the category descriptions in `workstream-categories.md`. Consider:
    - The "What belongs here" section of each category
    - The "What does NOT belong here" exclusions
    - Signal keywords mentioned in the descriptions
+   - Comment discussion that may refine, redirect, or redefine the issue's scope
    - The overall pattern of existing open issues
 
 ### Classification rules
