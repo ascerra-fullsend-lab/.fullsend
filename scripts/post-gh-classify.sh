@@ -26,10 +26,14 @@ CONTEXT_DIR="/tmp/workspace/context"
 DRY_RUN="${CLASSIFY_DRY_RUN:-false}"
 FILTER_CATEGORY="${CLASSIFY_FILTER_CATEGORY:-}"
 
-# Mask token immediately (only in GitHub Actions to avoid printing it locally).
-if [[ -n "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" == "true" ]]; then
-  echo "::add-mask::${GH_TOKEN}"
+# Mask tokens immediately (only in GitHub Actions to avoid printing them locally).
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  [[ -n "${GH_TOKEN:-}" ]] && echo "::add-mask::${GH_TOKEN}"
+  [[ -n "${CLASSIFY_PROJECT_TOKEN:-}" ]] && echo "::add-mask::${CLASSIFY_PROJECT_TOKEN}"
 fi
+
+# Use the project-specific PAT for cross-org project writes when available.
+PROJECT_GH_TOKEN="${CLASSIFY_PROJECT_TOKEN:-${GH_TOKEN}}"
 
 # Find the classify result JSON from the last iteration.
 RESULT_FILE=""
@@ -141,7 +145,7 @@ set_project_field() {
   fi
 
   # Resolve the issue's node_id once (used by both add and query).
-  local content_id
+  local content_id err_output
   content_id=$(gh api "repos/${REPO}/issues/${issue_number}" --jq '.node_id' 2>/dev/null || true)
   if [[ -z "${content_id}" ]]; then
     echo "  ⚠ Failed to resolve node_id for #${issue_number}"
@@ -152,7 +156,7 @@ set_project_field() {
   # project it returns the existing item. If the mutation fails for any
   # reason, fall back to querying for the existing item.
   local item_id
-  item_id=$(gh api graphql -f query='
+  item_id=$(GH_TOKEN="${PROJECT_GH_TOKEN}" gh api graphql -f query='
     mutation($projectId: ID!, $contentId: ID!) {
       addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
         item { id }
@@ -170,7 +174,7 @@ set_project_field() {
         cursor_arg="-f afterCursor=${cursor}"
       fi
       local page_result
-      page_result=$(gh api graphql -f query='
+      page_result=$(GH_TOKEN="${PROJECT_GH_TOKEN}" gh api graphql -f query='
         query($projectId: ID!, $afterCursor: String) {
           node(id: $projectId) {
             ... on ProjectV2 {
@@ -206,7 +210,7 @@ set_project_field() {
     return 1
   fi
 
-  if ! gh api graphql -f query='
+  err_output=$(GH_TOKEN="${PROJECT_GH_TOKEN}" gh api graphql -f query='
     mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
       updateProjectV2ItemFieldValue(input: {
         projectId: $projectId
@@ -219,8 +223,12 @@ set_project_field() {
     }' -f projectId="${PROJECT_ID}" \
     -f itemId="${item_id}" \
     -f fieldId="${FIELD_ID}" \
-    -f optionId="${option_id}" --silent 2>/dev/null; then
-    echo "  ⚠ Failed to set field on #${issue_number}"
+    -f optionId="${option_id}" --silent 2>&1)
+  local rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    local safe_err
+    safe_err=$(printf '%s' "${err_output}" | head -c 200 | sed "s/${PROJECT_GH_TOKEN:-__NONE__}/***TOKEN***/g")
+    echo "  ⚠ Failed to set field on #${issue_number}: ${safe_err}"
     return 1
   fi
 
