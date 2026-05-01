@@ -117,13 +117,11 @@ case "${CLASSIFY_MODE}" in
       HAS_NEXT="true"
       END_CURSOR=""
       PROJECT_ACCESS_OK="true"
+      PAGE_NUM=0
       while [[ "${HAS_NEXT}" == "true" ]]; do
-        CURSOR_ARG=""
-        if [[ -n "${END_CURSOR}" ]]; then
-          CURSOR_ARG="-f afterCursor=${END_CURSOR}"
-        fi
+        PAGE_NUM=$((PAGE_NUM + 1))
 
-        PAGE=$(GH_TOKEN="${PROJECT_GH_TOKEN}" gh api graphql -f query='
+        GH_ARGS=(gh api graphql -f query='
           query($org: String!, $num: Int!, $fieldName: String!, $afterCursor: String) {
             organization(login: $org) {
               projectV2(number: $num) {
@@ -145,32 +143,46 @@ case "${CLASSIFY_MODE}" in
                 }
               }
             }
-          }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" \
-             ${CURSOR_ARG:+"${CURSOR_ARG}"} 2>/dev/null) || {
-          echo "⚠ Could not query project items (access denied)"
+          }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}")
+
+        if [[ -n "${END_CURSOR}" ]]; then
+          GH_ARGS+=(-f "afterCursor=${END_CURSOR}")
+        fi
+
+        echo "  Fetching project items page ${PAGE_NUM}..."
+        PAGE=$(GH_TOKEN="${PROJECT_GH_TOKEN}" timeout 30 "${GH_ARGS[@]}" 2>&1) || {
+          echo "⚠ Could not query project items (page ${PAGE_NUM}, exit=$?)"
+          echo "  Response: $(echo "${PAGE}" | head -c 200)"
           PROJECT_ACCESS_OK="false"
           break
         }
 
         if [[ -z "${PAGE}" ]] || ! echo "${PAGE}" | jq -e '.data.organization.projectV2.items' >/dev/null 2>&1; then
           echo "⚠ Project query returned no data — treating all issues as unclassified"
+          echo "  Response: $(echo "${PAGE}" | head -c 200)"
           PROJECT_ACCESS_OK="false"
           break
         fi
 
         PAGE_NODES=$(echo "${PAGE}" | jq -c '.data.organization.projectV2.items.nodes // []')
+        PAGE_COUNT=$(echo "${PAGE_NODES}" | jq 'length')
         ALL_PROJECT_ITEMS=$(echo "${ALL_PROJECT_ITEMS}" "${PAGE_NODES}" | jq -sc '.[0] + .[1]')
         HAS_NEXT=$(echo "${PAGE}" | jq -r '.data.organization.projectV2.items.pageInfo.hasNextPage // false')
         END_CURSOR=$(echo "${PAGE}" | jq -r '.data.organization.projectV2.items.pageInfo.endCursor // empty')
+        echo "  ✓ Page ${PAGE_NUM}: ${PAGE_COUNT} items (hasNext=${HAS_NEXT})"
       done
 
       if [[ "${PROJECT_ACCESS_OK}" == "true" ]]; then
+        TOTAL_PROJECT=$(echo "${ALL_PROJECT_ITEMS}" | jq 'length')
+        echo "✓ Fetched ${TOTAL_PROJECT} total project items"
         PROJECT_ITEMS="${ALL_PROJECT_ITEMS}"
         CLASSIFIED_NUMBERS=$(printf '%s' "${PROJECT_ITEMS}" | jq -r --arg repo "${CLASSIFY_SOURCE_REPO}" '
           .[]
           | select(.content.repository.nameWithOwner == $repo)
           | select(.fieldValueByName.name != null and .fieldValueByName.name != "")
           | .content.number' 2>/dev/null | sort -n || true)
+        CLASSIFIED_COUNT=$(echo "${CLASSIFIED_NUMBERS}" | grep -c . || true)
+        echo "  Already classified in ${CLASSIFY_SOURCE_REPO}: ${CLASSIFIED_COUNT}"
 
         while IFS= read -r num; do
           if [[ -n "${num}" ]] && ! printf '%s\n' "${CLASSIFIED_NUMBERS}" | grep -qx "${num}"; then
@@ -214,7 +226,8 @@ fi
 if [[ "${CROSS_ORG}" == "true" && -z "${CLASSIFY_PROJECT_TOKEN:-}" ]]; then
   PROJECT_META='{}'
 else
-  PROJECT_META=$(GH_TOKEN="${PROJECT_GH_TOKEN}" gh api graphql -f query='
+  echo "  Querying project field metadata..."
+  PROJECT_META=$(GH_TOKEN="${PROJECT_GH_TOKEN}" timeout 30 gh api graphql -f query='
     query($org: String!, $num: Int!, $fieldName: String!) {
       organization(login: $org) {
         projectV2(number: $num) {
@@ -230,7 +243,7 @@ else
           }
         }
       }
-    }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" 2>/dev/null || echo '{}')
+    }' -f org="${ORG}" -F num="${PROJECT_NUMBER}" -f fieldName="${FIELD_NAME}" 2>&1 || echo '{}')
 fi
 
 # Write only the structural metadata the post-script needs.
