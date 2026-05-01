@@ -50,13 +50,24 @@ fi
 ORG="${CLASSIFY_SOURCE_REPO%%/*}"
 
 # Detect cross-org: if the GHA runner org differs from the source repo org,
-# GraphQL project queries will hang because the token can't access the other
-# org's projects. Skip project queries entirely in that case.
+# the default GH_TOKEN (app token) can't access the other org's projects.
+# However, if CLASSIFY_PROJECT_TOKEN is provided (a PAT with project read
+# access), we can still query the project board.
 CROSS_ORG="false"
+PROJECT_GH_TOKEN="${GH_TOKEN}"
 if [[ -n "${GITHUB_REPOSITORY_OWNER:-}" && "${GITHUB_REPOSITORY_OWNER}" != "${ORG}" ]]; then
   CROSS_ORG="true"
-  echo "⚠ Cross-org mode: runner=${GITHUB_REPOSITORY_OWNER}, source=${ORG}"
-  echo "  Project queries will be skipped (token cannot access ${ORG} projects)"
+  if [[ -n "${CLASSIFY_PROJECT_TOKEN:-}" ]]; then
+    echo "Cross-org mode: runner=${GITHUB_REPOSITORY_OWNER}, source=${ORG}"
+    echo "  Using CLASSIFY_PROJECT_TOKEN for project queries"
+    PROJECT_GH_TOKEN="${CLASSIFY_PROJECT_TOKEN}"
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      echo "::add-mask::${CLASSIFY_PROJECT_TOKEN}"
+    fi
+  else
+    echo "⚠ Cross-org mode: runner=${GITHUB_REPOSITORY_OWNER}, source=${ORG}"
+    echo "  No CLASSIFY_PROJECT_TOKEN — project queries will be skipped"
+  fi
 fi
 
 # --- Fetch all open issues (metadata only, used to determine unclassified set) ---
@@ -97,10 +108,10 @@ case "${CLASSIFY_MODE}" in
       exit 1
     fi
 
-    if [[ "${CROSS_ORG}" == "true" ]]; then
+    if [[ "${CROSS_ORG}" == "true" && -z "${CLASSIFY_PROJECT_TOKEN:-}" ]]; then
       echo "${ALL_ISSUE_NUMBERS}" > "${ISSUE_NUMBERS_FILE}"
       TOTAL_COUNT=$(wc -l < "${ISSUE_NUMBERS_FILE}" | tr -d ' ')
-      echo "✓ Treating all ${TOTAL_COUNT} open issues as unclassified (cross-org, no project access)"
+      echo "✓ Treating all ${TOTAL_COUNT} open issues as unclassified (cross-org, no project token)"
     else
       ALL_PROJECT_ITEMS="[]"
       HAS_NEXT="true"
@@ -112,7 +123,7 @@ case "${CLASSIFY_MODE}" in
           CURSOR_ARG="-f afterCursor=${END_CURSOR}"
         fi
 
-        PAGE=$(gh api graphql -f query='
+        PAGE=$(GH_TOKEN="${PROJECT_GH_TOKEN}" gh api graphql -f query='
           query($org: String!, $num: Int!, $fieldName: String!, $afterCursor: String) {
             organization(login: $org) {
               projectV2(number: $num) {
@@ -200,10 +211,10 @@ if [[ ! "${FIELD_NAME}" =~ ^[a-zA-Z0-9\ ,._-]+$ ]]; then
   exit 1
 fi
 
-if [[ "${CROSS_ORG}" == "true" ]]; then
+if [[ "${CROSS_ORG}" == "true" && -z "${CLASSIFY_PROJECT_TOKEN:-}" ]]; then
   PROJECT_META='{}'
 else
-  PROJECT_META=$(gh api graphql -f query='
+  PROJECT_META=$(GH_TOKEN="${PROJECT_GH_TOKEN}" gh api graphql -f query='
     query($org: String!, $num: Int!, $fieldName: String!) {
       organization(login: $org) {
         projectV2(number: $num) {
