@@ -1,4 +1,4 @@
-name: GitHub Issue Classify
+name: Classify GitHub Issues
 
 on:
   workflow_dispatch:
@@ -172,7 +172,7 @@ jobs:
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.FULLSEND_GH_CLASSIFY_CLIENT_ID }}
-          private-key: ${{ secrets.FULLSEND_GH_CLASSIFY_APP_PRIVATE_KEY || secrets.FULLSEND_CLASSIFY_APP_PRIVATE_KEY }}
+          private-key: ${{ secrets.FULLSEND_GH_CLASSIFY_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
       - name: Authenticate to Google Cloud (WIF)
