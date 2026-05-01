@@ -227,7 +227,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           CLASSIFY_SOURCE_REPO: ${{ steps.params.outputs.source_repo }}
           CLASSIFY_MODE: ${{ steps.params.outputs.classify_mode }}
-          CLASSIFY_ISSUE_NUMBER: ${{ steps.params.outputs.issue_number }}
+          CLASSIFY_ISSUE_NUMBER: ${{ steps.params.outputs.issue_number || '0' }}
           CLASSIFY_DRY_RUN: ${{ steps.params.outputs.dry_run }}
           CLASSIFY_MIN_CONFIDENCE: ${{ steps.params.outputs.min_confidence }}
           CLASSIFY_PROJECT_NUMBER: ${{ vars.FULLSEND_GH_CLASSIFY_PROJECT_NUMBER }}
@@ -236,6 +236,5 @@ jobs:
           CLASSIFY_SCREEN_ISSUES: ${{ steps.params.outputs.screen_issues }}
           CLASSIFY_CATEGORIES_PATH: ${{ vars.FULLSEND_GH_CLASSIFY_CATEGORIES_PATH || 'categories.md' }}
           CLASSIFY_PROJECT_TOKEN: ${{ secrets.FULLSEND_GH_CLASSIFY_PROJECT_PAT || '__none__' }}
-          CLASSIFY_ISSUE_NUMBER: ${{ steps.params.outputs.issue_number || '0' }}
         with:
           agent: gh-classify
