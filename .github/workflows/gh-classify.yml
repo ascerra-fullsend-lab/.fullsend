@@ -46,6 +46,14 @@ on:
         description: "Only classify into this category (leave empty for all categories)"
         required: false
         type: string
+      screen_issues:
+        description: "Screen issues by title/labels before fetching details (disable for thorough evaluation)"
+        required: false
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
 
 concurrency:
   group: fullsend-gh-classify-${{ inputs.classify_mode }}-${{ inputs.issue_number || 'batch' }}
@@ -76,6 +84,7 @@ jobs:
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
           INPUT_MIN_CONFIDENCE: ${{ inputs.min_confidence }}
           INPUT_FILTER_CATEGORY: ${{ inputs.filter_category }}
+          INPUT_SCREEN_ISSUES: ${{ inputs.screen_issues }}
         run: |
           set -euo pipefail
 
@@ -126,8 +135,9 @@ jobs:
           echo "dry_run=${INPUT_DRY_RUN:-false}" >> "$GITHUB_OUTPUT"
           echo "min_confidence=${INPUT_MIN_CONFIDENCE:-0.7}" >> "$GITHUB_OUTPUT"
           echo "filter_category=${INPUT_FILTER_CATEGORY:-}" >> "$GITHUB_OUTPUT"
+          echo "screen_issues=${INPUT_SCREEN_ISSUES:-true}" >> "$GITHUB_OUTPUT"
 
-          echo "::notice::Mode=${CLASSIFY_MODE} Repo=${SOURCE_REPO} Issue=${ISSUE_NUMBER:-<batch>} DryRun=${INPUT_DRY_RUN:-false}"
+          echo "::notice::Mode=${CLASSIFY_MODE} Repo=${SOURCE_REPO} Issue=${ISSUE_NUMBER:-<batch>} DryRun=${INPUT_DRY_RUN:-false} Screen=${INPUT_SCREEN_ISSUES:-true}"
 
       - name: Validate source repo is enrolled
         env:
@@ -204,6 +214,7 @@ jobs:
           CLASSIFY_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           CLASSIFY_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
           CLASSIFY_FILTER_CATEGORY: ${{ steps.params.outputs.filter_category }}
+          CLASSIFY_SCREEN_ISSUES: ${{ steps.params.outputs.screen_issues }}
           CLASSIFY_CATEGORIES_PATH: ${{ vars.FULLSEND_GH_CLASSIFY_CATEGORIES_PATH || 'categories.md' }}
         run: bash .github/scripts/setup-agent-env.sh
 
@@ -222,6 +233,7 @@ jobs:
           CLASSIFY_PROJECT_NUMBER: ${{ vars.FULLSEND_GH_CLASSIFY_PROJECT_NUMBER }}
           CLASSIFY_FIELD_NAME: ${{ vars.FULLSEND_GH_CLASSIFY_FIELD_NAME }}
           CLASSIFY_FILTER_CATEGORY: ${{ steps.params.outputs.filter_category }}
+          CLASSIFY_SCREEN_ISSUES: ${{ steps.params.outputs.screen_issues }}
           CLASSIFY_CATEGORIES_PATH: ${{ vars.FULLSEND_GH_CLASSIFY_CATEGORIES_PATH || 'categories.md' }}
           CLASSIFY_PROJECT_TOKEN: ${{ secrets.FULLSEND_GH_CLASSIFY_PROJECT_PAT }}
         with:

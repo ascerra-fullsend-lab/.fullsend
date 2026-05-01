@@ -160,6 +160,7 @@ All modes support `dry_run=true`. In dry-run mode:
 | `CLASSIFY_DRY_RUN` | `false` | Skip all writes |
 | `CLASSIFY_MIN_CONFIDENCE` | `0.7` | Minimum confidence to assign a category |
 | `CLASSIFY_FILTER_CATEGORY` | — | Restrict to a single category |
+| `CLASSIFY_SCREEN_ISSUES` | `true` | Screen by title/labels before fetching details |
 | `CLASSIFY_CATEGORIES_PATH` | `categories.md` | Path to the categories document |
 
 ## Architecture

@@ -326,42 +326,68 @@ if [[ ${#SKIPPED_LINES[@]} -gt 0 ]]; then
   echo ""
 fi
 
-# --- Section 2: Count screened-out issues (no line-by-line dump) ---
-if [[ -f "${ISSUES_FILE}" ]]; then
-  NOT_EVALUATED_NUMS=()
-  while IFS= read -r num; do
-    if ! printf '%s\n' ${AGENT_ISSUE_NUMS} | grep -qx "${num}"; then
-      NOT_EVALUATED_NUMS+=("${num}")
-    fi
-  done < <(jq -r '.[].number' "${ISSUES_FILE}")
-  NOT_EVALUATED=${#NOT_EVALUATED_NUMS[@]}
+# --- Section 2: Distinguish already-classified from screened-out ---
+ALREADY_CLASSIFIED=0
+SCREENED_OUT=0
 
-  if [[ ${NOT_EVALUATED} -gt 0 ]]; then
-    printf 'SCREENED OUT (%s issues)\n' "${NOT_EVALUATED}"
+CANDIDATE_NUMBERS_FILE="${CONTEXT_DIR}/issue-numbers.txt"
+if [[ -f "${ISSUES_FILE}" ]]; then
+  if [[ -f "${CANDIDATE_NUMBERS_FILE}" ]]; then
+    CANDIDATE_COUNT=$(wc -l < "${CANDIDATE_NUMBERS_FILE}" | tr -d ' ')
+    ALREADY_CLASSIFIED=$((ALL_OPEN_COUNT - CANDIDATE_COUNT))
+
+    SCREENED_NUMS=()
+    while IFS= read -r num; do
+      if [[ -n "${num}" ]] && ! printf '%s\n' ${AGENT_ISSUE_NUMS} | grep -qx "${num}"; then
+        SCREENED_NUMS+=("${num}")
+      fi
+    done < "${CANDIDATE_NUMBERS_FILE}"
+    SCREENED_OUT=${#SCREENED_NUMS[@]}
+  else
+    while IFS= read -r num; do
+      if ! printf '%s\n' ${AGENT_ISSUE_NUMS} | grep -qx "${num}"; then
+        ((SCREENED_OUT++)) || true
+      fi
+    done < <(jq -r '.[].number' "${ISSUES_FILE}")
+  fi
+
+  if [[ ${ALREADY_CLASSIFIED} -gt 0 ]]; then
+    printf 'ALREADY CLASSIFIED (%s issues)\n' "${ALREADY_CLASSIFIED}"
+    echo "------------------------------------------------------------"
+    printf '  %s issues already have a category on the project board\n' "${ALREADY_CLASSIFIED}"
+    echo ""
+  fi
+
+  if [[ ${SCREENED_OUT} -gt 0 ]]; then
+    printf 'SCREENED OUT (%s issues)\n' "${SCREENED_OUT}"
     echo "------------------------------------------------------------"
     if [[ -n "${FILTER_CATEGORY}" ]]; then
-      printf '  %s issues did not match the "%s" filter\n' "${NOT_EVALUATED}" "${FILTER_CATEGORY}"
+      printf '  %s issues did not match the "%s" filter\n' "${SCREENED_OUT}" "${FILTER_CATEGORY}"
     else
-      printf '  %s issues screened out by title/labels before evaluation\n' "${NOT_EVALUATED}"
+      printf '  %s issues screened out by title/labels before evaluation\n' "${SCREENED_OUT}"
     fi
     echo "  (full list available in classify-report.json artifact)"
     echo ""
   fi
 fi
 
-TOTAL_ALL=$((AGENT_EVALUATED + NOT_EVALUATED))
+NOT_EVALUATED=$((ALREADY_CLASSIFIED + SCREENED_OUT))
 
 echo "============================================================"
 echo "  SUMMARY"
 echo "============================================================"
 printf '  Open issues:        %s\n' "${ALL_OPEN_COUNT}"
+if [[ ${ALREADY_CLASSIFIED} -gt 0 ]]; then
+  printf '  Already classified: %s\n' "${ALREADY_CLASSIFIED}"
+fi
+printf '  Candidates:         %s\n' "$((ALL_OPEN_COUNT - ALREADY_CLASSIFIED))"
 printf '  Agent evaluated:    %s\n' "${AGENT_EVALUATED}"
 printf '    Classified:       %s\n' "${CLASSIFIED}"
 printf '    Skipped:          %s\n' "${SKIPPED}"
 if [[ ${ERRORS} -gt 0 ]]; then
   printf '    Errors:           %s\n' "${ERRORS}"
 fi
-printf '  Screened out:       %s\n' "${NOT_EVALUATED}"
+printf '  Screened out:       %s\n' "${SCREENED_OUT}"
 if [[ "${DRY_RUN}" == "true" ]]; then
   echo "------------------------------------------------------------"
   echo "  DRY RUN -- no changes were written to GitHub"
@@ -393,8 +419,12 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "| Metric | Count |"
     echo "|--------|------:|"
     echo "| Total open issues | ${ALL_OPEN_COUNT} |"
+    if [[ ${ALREADY_CLASSIFIED} -gt 0 ]]; then
+      echo "| Already classified | ${ALREADY_CLASSIFIED} |"
+    fi
+    echo "| Candidates | $((ALL_OPEN_COUNT - ALREADY_CLASSIFIED)) |"
     echo "| Agent evaluated | ${AGENT_EVALUATED} |"
-    echo "| Screened out | ${NOT_EVALUATED} |"
+    echo "| Screened out | ${SCREENED_OUT} |"
     echo "| Classified | ${CLASSIFIED} |"
     echo "| Skipped (low conf) | ${SKIPPED} |"
     echo "| Errors | ${ERRORS} |"

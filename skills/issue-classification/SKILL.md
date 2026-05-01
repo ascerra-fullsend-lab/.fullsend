@@ -53,7 +53,10 @@ This gives you metadata for all open issues.
 
 ## Step 3: Screen candidates
 
-You have limited time. Do NOT call `gh issue view` on every issue.
+Check `CLASSIFY_SCREEN_ISSUES` (defaults to `true`).
+
+**If screening is enabled (`true`):** You have limited time. Do NOT call
+`gh issue view` on every issue.
 
 1. **Screen by title and labels.** Using the category descriptions from
    Step 1, identify which issues are plausible candidates that need deeper
@@ -63,7 +66,10 @@ You have limited time. Do NOT call `gh issue view` on every issue.
 2. **Apply category filter.** If `CLASSIFY_FILTER_CATEGORY` is set, only
    fetch details for issues that might belong in that specific category.
 
-3. **Fetch details and comments for candidates:**
+**If screening is disabled (`false`):** Fetch details for ALL candidate
+issues from Step 2. Do not skip any based on title or labels.
+
+**Fetch details and comments for each candidate:**
 
 ```bash
 gh issue view <number> --repo "$CLASSIFY_SOURCE_REPO" \
@@ -95,8 +101,8 @@ labels, and context against the category descriptions. Consider:
 1. **Category filter** — If `CLASSIFY_FILTER_CATEGORY` is set, you may
    only assign that exact category or `null`.
 
-2. **Confidence threshold** — Only assign a category at >= 70% confidence.
-   Prefer `null` over a guess.
+2. **Confidence threshold** — Only assign a category when your confidence
+   meets `CLASSIFY_MIN_CONFIDENCE` (default 0.7). Prefer `null` over a guess.
 
 3. **Mutual exclusivity** — One category or null per issue. Never multiple.
 
