@@ -1,0 +1,167 @@
+# fullsend-stage: scribe
+name: Scribe
+
+on:
+  schedule:
+    # Mon–Thu at 16:10 UTC (shortly after typical 9–11 AM ET team syncs).
+    # Adjust to match your meeting schedule.
+    - cron: '10 16 * * 1-4'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview mode — no GitHub writes (ALWAYS use true during development)'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      lookback_hours:
+        description: 'How far back to search for meeting notes'
+        required: false
+        default: '3'
+        type: string
+      min_confidence:
+        description: 'Minimum confidence score (0.0–1.0) for topics to pass the security gate'
+        required: false
+        default: '0.6'
+        type: string
+      mode:
+        description: 'Agent mode: all (comments + new issues), comments_only, new_issues_only'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - 'comments_only'
+          - 'new_issues_only'
+
+# Scheduled runs ALWAYS use dry_run=true as a safety measure.
+# Change the env default below ONLY after thorough testing.
+env:
+  SCRIBE_DRY_RUN_DEFAULT: 'true'
+
+concurrency:
+  group: fullsend-scribe
+  cancel-in-progress: false
+
+jobs:
+  scribe:
+    name: Scribe
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      issues: write
+
+    steps:
+      - name: Checkout .fullsend repository
+        uses: actions/checkout@v6
+
+      - name: Determine dry-run mode
+        id: config
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "dry_run=${{ vars.SCRIBE_DRY_RUN || env.SCRIBE_DRY_RUN_DEFAULT }}" >> "${GITHUB_OUTPUT}"
+            echo "lookback=${{ vars.SCRIBE_LOOKBACK_HOURS || '3' }}" >> "${GITHUB_OUTPUT}"
+            echo "min_confidence=${{ vars.SCRIBE_MIN_CONFIDENCE || '0.6' }}" >> "${GITHUB_OUTPUT}"
+            echo "mode=${{ vars.SCRIBE_MODE || 'all' }}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "dry_run=${{ inputs.dry_run || 'true' }}" >> "${GITHUB_OUTPUT}"
+            echo "lookback=${{ inputs.lookback_hours || vars.SCRIBE_LOOKBACK_HOURS || '3' }}" >> "${GITHUB_OUTPUT}"
+            echo "min_confidence=${{ inputs.min_confidence || vars.SCRIBE_MIN_CONFIDENCE || '0.6' }}" >> "${GITHUB_OUTPUT}"
+            echo "mode=${{ inputs.mode || vars.SCRIBE_MODE || 'all' }}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Safety check
+        run: |
+          echo "::notice::Scribe dry_run=${{ steps.config.outputs.dry_run }}"
+          if [[ "${{ steps.config.outputs.dry_run }}" != "true" && "${{ steps.config.outputs.dry_run }}" != "false" ]]; then
+            echo "::error::Invalid dry_run value — must be 'true' or 'false'"
+            exit 1
+          fi
+
+      - name: Generate app token (issues)
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          # TODO: create a dedicated scribe app with issues:write + contents:read
+          client-id: ${{ vars.FULLSEND_TRIAGE_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_TRIAGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Generate app token (contents)
+        id: contents-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FULLSEND_CODER_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_CODER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Resolve target repository
+        id: target
+        run: |
+          TARGET="${{ vars.SCRIBE_TARGET_REPO }}"
+          if [[ -z "${TARGET}" ]]; then
+            TARGET="${{ github.repository_owner }}/${{ github.event.repository.name }}"
+          elif [[ "${TARGET}" != */* ]]; then
+            TARGET="${{ github.repository_owner }}/${TARGET}"
+          fi
+          echo "repo=${TARGET}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout target repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.target.outputs.repo }}
+          token: ${{ steps.contents-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 1
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
+
+      - name: Mask GCP credential file paths
+        run: |
+          for var in GOOGLE_GHA_CREDS_PATH GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE; do
+            val="${!var:-}"
+            if [[ -n "${val}" ]]; then
+              echo "::add-mask::${val}"
+            fi
+          done
+
+      - name: Write Drive SA credentials
+        env:
+          SCRIBE_SA_KEY: ${{ secrets.SCRIBE_GCP_SA_KEY_JSON }}
+        run: |
+          SCRIBE_CREDS="${RUNNER_TEMP}/scribe-drive-sa.json"
+          printf '%s' "${SCRIBE_SA_KEY}" > "${SCRIBE_CREDS}"
+          echo "::add-mask::${SCRIBE_CREDS}"
+          echo "SCRIBE_DRIVE_CREDENTIALS=${SCRIBE_CREDS}" >> "${GITHUB_ENV}"
+
+      - name: Prepare sandbox credentials
+        run: bash scripts/prepare-sandbox-credentials.sh
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: SCRIBE_
+          SCRIBE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SCRIBE_CONTENTS_TOKEN: ${{ steps.contents-token.outputs.token }}
+          SCRIBE_REPO: ${{ steps.target.outputs.repo }}
+          SCRIBE_SEARCH_QUERY: ${{ vars.SCRIBE_GDRIVE_SEARCH_QUERY }}
+          SCRIBE_NAME_FILTER: ${{ vars.SCRIBE_GDRIVE_NAME_FILTER || '' }}
+          SCRIBE_LOOKBACK_HOURS: ${{ steps.config.outputs.lookback }}
+          SCRIBE_DRY_RUN: ${{ steps.config.outputs.dry_run }}
+          SCRIBE_MIN_CONFIDENCE: ${{ steps.config.outputs.min_confidence }}
+          SCRIBE_MODE: ${{ steps.config.outputs.mode }}
+          SCRIBE_SLACK_WEBHOOK_URL: ${{ secrets.SCRIBE_SLACK_WEBHOOK_URL }}
+          SCRIBE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          SCRIBE_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run scribe agent
+        uses: ./.github/actions/fullsend
+        with:
+          agent: scribe
