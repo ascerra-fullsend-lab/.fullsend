@@ -22,7 +22,6 @@ jobs:
   review:
     name: Review
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     permissions:
       actions: write
       contents: read
