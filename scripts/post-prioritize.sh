@@ -77,7 +77,7 @@ ISSUE_NODE_ID=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
 # Find the project item ID for this issue via the issue's projectItems connection.
 # This is a single API call regardless of project size, avoiding pagination and timeouts.
 ITEM_RESPONSE=$(gh api graphql -f query='
-  query($issueId: ID!, $projectId: ID!) {
+  query($issueId: ID!) {
     node(id: $issueId) {
       ... on Issue {
         projectItems(first: 10) {
@@ -89,7 +89,7 @@ ITEM_RESPONSE=$(gh api graphql -f query='
       }
     }
   }
-' -f issueId="${ISSUE_NODE_ID}" -f projectId="${PROJECT_ID}")
+' -f issueId="${ISSUE_NODE_ID}")
 
 ITEM_ID=$(echo "${ITEM_RESPONSE}" | jq -r --arg pid "${PROJECT_ID}" \
   '(.data.node.projectItems.nodes // [])[] | select(.project.id == $pid) | .id')
