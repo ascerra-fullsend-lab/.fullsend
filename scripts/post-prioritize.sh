@@ -76,7 +76,7 @@ ISSUE_NODE_ID=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
 
 # Find the project item ID for this issue via the issue's projectItems connection.
 # This is a single API call regardless of project size, avoiding pagination and timeouts.
-ITEM_ID=$(gh api graphql -f query='
+ITEM_RESPONSE=$(gh api graphql -f query='
   query($issueId: ID!, $projectId: ID!) {
     node(id: $issueId) {
       ... on Issue {
@@ -89,12 +89,15 @@ ITEM_ID=$(gh api graphql -f query='
       }
     }
   }
-' -f issueId="${ISSUE_NODE_ID}" -f projectId="${PROJECT_ID}" \
-  | jq -r --arg pid "${PROJECT_ID}" \
-    '.data.node.projectItems.nodes[] | select(.project.id == $pid) | .id')
+' -f issueId="${ISSUE_NODE_ID}" -f projectId="${PROJECT_ID}")
+
+ITEM_ID=$(echo "${ITEM_RESPONSE}" | jq -r --arg pid "${PROJECT_ID}" \
+  '(.data.node.projectItems.nodes // [])[] | select(.project.id == $pid) | .id')
 
 if [[ -z "${ITEM_ID}" || "${ITEM_ID}" == "null" ]]; then
   echo "ERROR: issue ${GITHUB_ISSUE_URL} not found on project board"
+  echo "DEBUG: ISSUE_NODE_ID=${ISSUE_NODE_ID} PROJECT_ID=${PROJECT_ID}"
+  echo "DEBUG: API response: $(echo "${ITEM_RESPONSE}" | jq -c .)"
   exit 1
 fi
 
