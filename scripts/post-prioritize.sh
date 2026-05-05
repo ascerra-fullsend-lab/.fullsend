@@ -74,42 +74,24 @@ REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||
 ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
 ISSUE_NODE_ID=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
 
-# Find the project item ID for this issue (paginate through all items).
-ITEM_ID=""
-CURSOR=""
-HAS_NEXT_PAGE=true
-
-while [[ "${HAS_NEXT_PAGE}" == "true" && -z "${ITEM_ID}" ]]; do
-  if [[ -z "${CURSOR}" ]]; then
-    AFTER_ARG=""
-  else
-    AFTER_ARG=", after: \$cursor"
-  fi
-
-  PAGE_JSON=$(gh api graphql -f query="
-    query(\$projectId: ID!$([ -n "${CURSOR}" ] && echo ', $cursor: String!')) {
-      node(id: \$projectId) {
-        ... on ProjectV2 {
-          items(first: 100${AFTER_ARG}) {
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-            nodes {
-              id
-              content { ... on Issue { url } }
-            }
+# Find the project item ID for this issue via the issue's projectItems connection.
+# This is a single API call regardless of project size, avoiding pagination and timeouts.
+ITEM_ID=$(gh api graphql -f query='
+  query($issueId: ID!, $projectId: ID!) {
+    node(id: $issueId) {
+      ... on Issue {
+        projectItems(first: 10) {
+          nodes {
+            id
+            project { id }
           }
         }
       }
     }
-  " -f projectId="${PROJECT_ID}" ${CURSOR:+-f cursor="${CURSOR}"})
-
-  ITEM_ID=$(echo "${PAGE_JSON}" | jq -r --arg url "${GITHUB_ISSUE_URL}" \
-    '.data.node.items.nodes[] | select(.content.url == $url) | .id // empty')
-  HAS_NEXT_PAGE=$(echo "${PAGE_JSON}" | jq -r '.data.node.items.pageInfo.hasNextPage')
-  CURSOR=$(echo "${PAGE_JSON}" | jq -r '.data.node.items.pageInfo.endCursor')
-done
+  }
+' -f issueId="${ISSUE_NODE_ID}" -f projectId="${PROJECT_ID}" \
+  | jq -r --arg pid "${PROJECT_ID}" \
+    '.data.node.projectItems.nodes[] | select(.project.id == $pid) | .id')
 
 if [[ -z "${ITEM_ID}" || "${ITEM_ID}" == "null" ]]; then
   echo "ERROR: issue ${GITHUB_ISSUE_URL} not found on project board"
@@ -149,81 +131,9 @@ update_field "${EFFORT_FIELD_ID}" "${EFFORT}"
 update_field "${SCORE_FIELD_ID}" "${SCORE}"
 echo "Project fields updated."
 
-# --- Rerank items by RICE Score (descending, nulls at bottom) ---
-
-echo "Reranking project board by RICE Score..."
-
-# Fetch all items with their RICE Score values (paginate through all items).
-RANKED_JSON='{"data":{"node":{"items":{"nodes":[]}}}}'
-CURSOR=""
-HAS_NEXT_PAGE=true
-
-while [[ "${HAS_NEXT_PAGE}" == "true" ]]; do
-  if [[ -z "${CURSOR}" ]]; then
-    AFTER_ARG=""
-  else
-    AFTER_ARG=", after: \$cursor"
-  fi
-
-  PAGE_JSON=$(gh api graphql -f query="
-    query(\$projectId: ID!$([ -n "${CURSOR}" ] && echo ', $cursor: String!')) {
-      node(id: \$projectId) {
-        ... on ProjectV2 {
-          items(first: 100${AFTER_ARG}) {
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-            nodes {
-              id
-              fieldValues(first: 20) {
-                nodes {
-                  ... on ProjectV2ItemFieldNumberValue {
-                    field { ... on ProjectV2Field { id } }
-                    number
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  " -f projectId="${PROJECT_ID}" ${CURSOR:+-f cursor="${CURSOR}"})
-
-  RANKED_JSON=$(jq -s '
-    .[0].data.node.items.nodes += .[1].data.node.items.nodes
-    | .[0]
-  ' <(echo "${RANKED_JSON}") <(echo "${PAGE_JSON}"))
-
-  HAS_NEXT_PAGE=$(echo "${PAGE_JSON}" | jq -r '.data.node.items.pageInfo.hasNextPage')
-  CURSOR=$(echo "${PAGE_JSON}" | jq -r '.data.node.items.pageInfo.endCursor')
-done
-
-# Build a sorted list: scored items descending by score, then unscored items.
-SORTED_IDS=$(echo "${RANKED_JSON}" | jq -r --arg fid "${SCORE_FIELD_ID}" '
-  [.data.node.items.nodes[] | {
-    id: .id,
-    score: ([.fieldValues.nodes[] | select(.field.id == $fid) | .number] | first)
-  }]
-  | ([ .[] | select(.score != null) ] | sort_by(-.score))
-    + [ .[] | select(.score == null) ]
-  | .[].id
-')
-
-# Reposition items in order using updateProjectV2ItemPosition.
-AFTER_ID=""
-for item_id in ${SORTED_IDS}; do
-  gh api graphql --input - <<RERANK_EOF > /dev/null
-{
-  "query": "mutation(\$projectId: ID!, \$itemId: ID!, \$afterId: ID) { updateProjectV2ItemPosition(input: { projectId: \$projectId, itemId: \$itemId, afterId: \$afterId }) { items(first: 1) { nodes { id } } } }",
-  "variables": $(jq -n --arg pid "${PROJECT_ID}" --arg iid "${item_id}" --arg aid "${AFTER_ID}" '{projectId: $pid, itemId: $iid, afterId: (if $aid == "" then null else $aid end)}')
-}
-RERANK_EOF
-  AFTER_ID="${item_id}"
-done
-
-echo "Board reranked by RICE Score."
+# Board reranking by RICE Score is handled natively by the Projects V2 board's
+# built-in sort-by-field feature, avoiding N sequential API mutations and
+# secondary rate limit risk with large boards.
 
 # --- Post reasoning comment ---
 
