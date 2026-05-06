@@ -3,9 +3,8 @@ name: Scribe
 
 on:
   schedule:
-    # Mon–Thu at 16:10 UTC (shortly after typical 9–11 AM ET team syncs).
-    # Adjust to match your meeting schedule.
-    - cron: '10 16 * * 1-4'
+    # Mon–Thu at 15:00 UTC (11:00 AM ET, ~2 hours after typical 8–9 AM ET syncs).
+    - cron: '0 15 * * 1-4'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -36,8 +35,6 @@ on:
           - 'comments_only'
           - 'new_issues_only'
 
-# Scheduled runs ALWAYS use dry_run=true as a safety measure.
-# Change the env default below ONLY after thorough testing.
 env:
   SCRIBE_DRY_RUN_DEFAULT: 'true'
 
