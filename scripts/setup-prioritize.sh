@@ -28,6 +28,8 @@ echo "Project ID: ${PROJECT_ID}"
 EXISTING_FIELDS=$(gh project field-list "${PROJECT_NUMBER}" --owner "${ORG}" --format json | jq -r '.fields[].name')
 
 # Create number fields if they don't already exist.
+# Note: createProjectV2Field returns a ProjectV2FieldConfiguration union type,
+# so we use an inline fragment to select the concrete type's fields.
 for field_name in "RICE Reach" "RICE Impact" "RICE Confidence" "RICE Effort" "RICE Score"; do
   if echo "${EXISTING_FIELDS}" | grep -qx "${field_name}"; then
     echo "Field '${field_name}' already exists — skipping."
