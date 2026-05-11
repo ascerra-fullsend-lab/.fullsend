@@ -3,8 +3,8 @@ name: Scribe
 
 on:
   schedule:
-    # Mon–Thu at 15:00 UTC (11:00 AM ET, ~2 hours after typical 8–9 AM ET syncs).
-    - cron: '0 15 * * 1-4'
+    # Mon–Thu at 14:00 UTC (10:00 AM ET); scheduled 1 hour early to absorb GHA cron drift.
+    - cron: '0 14 * * 1-4'
   workflow_dispatch:
     inputs:
       dry_run:
