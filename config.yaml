@@ -13,6 +13,7 @@ defaults:
         - triage
         - coder
         - review
+        - fix
         - prioritize
         - retro
     max_implementation_retries: 2
