@@ -35,6 +35,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+LYCHEE_VERSION="0.24.2"
+LYCHEE_SHA256="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+UV_VERSION="0.11.14"
+UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -116,7 +120,39 @@ gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact
 echo "Secret scan passed — no leaks in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
-# 4. Authoritative pre-commit check
+# 4. Install lychee (for pre-commit markdown link checking)
+# ---------------------------------------------------------------------------
+if ! command -v lychee >/dev/null 2>&1; then
+  echo "Installing lychee v${LYCHEE_VERSION}..."
+  mkdir -p "${HOME}/.local/bin"
+  curl -fsSL \
+    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz" \
+    -o /tmp/lychee.tar.gz \
+    && echo "${LYCHEE_SHA256}  /tmp/lychee.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/lychee.tar.gz -C "${HOME}/.local/bin" lychee \
+    && rm /tmp/lychee.tar.gz
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Install uv and uvx (for pre-commit Python tooling)
+# ---------------------------------------------------------------------------
+if ! command -v uvx >/dev/null 2>&1; then
+  echo "Installing uv v${UV_VERSION} (includes uvx)..."
+  mkdir -p "${HOME}/.local/bin"
+  curl -fsSL \
+    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+    -o /tmp/uv.tar.gz \
+    && echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/uv.tar.gz -C /tmp \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uv "${HOME}/.local/bin/" \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uvx "${HOME}/.local/bin/" \
+    && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Authoritative pre-commit check
 # ---------------------------------------------------------------------------
 if [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -148,7 +184,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Push branch
+# 7. Push branch
 # ---------------------------------------------------------------------------
 git remote set-url origin \
   "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
@@ -157,7 +193,7 @@ echo "Pushing branch ${BRANCH}..."
 git push --force-with-lease -u origin -- "${BRANCH}" 2>&1
 
 # ---------------------------------------------------------------------------
-# 6. Create PR
+# 8. Create PR
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
