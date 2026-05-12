@@ -13,8 +13,8 @@ defaults:
         - triage
         - coder
         - review
+        - prioritize
         - retro
-        - fix
     max_implementation_retries: 2
     auto_merge: false
 agents:
@@ -30,10 +30,18 @@ agents:
     - role: review
       name: fullsend-ai-review
       slug: fullsend-ai-review
+    - role: prioritize
+      name: fullsend-ai-prioritize
+      slug: fullsend-ai-prioritize
+    - role: retro
+      name: fullsend-ai-retro
+      slug: fullsend-ai-retro
 repos:
     .fullsend:
         enabled: false
     experiments:
-        enabled: true
+        enabled: false
     fullsend:
-        enabled: true
+        enabled: false
+    metrics:
+        enabled: false
