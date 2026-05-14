@@ -8,6 +8,11 @@ dispatch:
 defaults:
     roles:
         - classify
+        - triage
+        - review
+        - fix
+        - coder
+        - fullsend
     max_implementation_retries: 2
     auto_merge: false
 agents:
@@ -18,4 +23,6 @@ repos:
     .fullsend:
         enabled: false
     fix-agent-test:
-        enabled: false
+        enabled: true
+    human-pr-fix-test:
+        enabled: true
