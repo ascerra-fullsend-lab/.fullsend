@@ -1,0 +1,66 @@
+Lab Team Sync — May 15, 2026
+
+[attendee] [attendee] [attendee]
+
+Agenda:
+
+1. Fix agent gating for human-authored PRs
+2. String reversal utility progress
+3. CI pipeline reliability
+
+---
+
+## Fix agent gating for human-authored PRs
+
+Discussion around the current behavior in
+https://github.com/ascerra-fullsend-lab/human-pr-fix-test where the fix
+agent is still triggering on PRs authored by humans. The expectation is
+that the agent should only auto-fix PRs opened by bots or other agents.
+
+Decision: add a label check — if PR has `human-authored` label, skip the
+fix agent entirely. This avoids false positives where the agent rewrites
+intentional human changes.
+
+Next steps: implement label gating in the workflow trigger conditions.
+
+## String reversal utility
+
+The string reversal utility tracked in
+https://github.com/ascerra-fullsend-lab/human-pr-fix-test/issues/3 was
+discussed. Current implementation only handles ASCII. Need to support
+Unicode grapheme clusters (e.g. emoji sequences).
+
+Options considered:
+- Use ICU4C via FFI — heavy dependency
+- Use Go's `golang.org/x/text/unicode/norm` — lighter
+- Accept ASCII-only for v1 and iterate
+
+Decision: go with ASCII-only for v1, file follow-up for Unicode support.
+
+## CI pipeline reliability in fix-agent-test
+
+The CI matrix in https://github.com/ascerra-fullsend-lab/fix-agent-test
+has been flaky on the `ubuntu-latest` runner. Tests pass locally but
+intermittently fail in Actions due to race conditions in the test harness
+setup.
+
+Options:
+- Add retry logic to the test step
+- Increase timeout and add explicit waits
+- Refactor test harness to use sequential setup
+
+No final decision — needs more investigation. Agreed to file an issue to
+track the flakiness.
+
+## .fullsend configuration updates
+
+Brief mention of updating the scribe agent schedule in
+https://github.com/ascerra-fullsend-lab/.fullsend to run less frequently
+during weekends. No action item — just awareness.
+
+---
+
+Action items:
+- Implement label gating for fix agent
+- File issue for CI flakiness in fix-agent-test
+- Unicode support follow-up for string reversal

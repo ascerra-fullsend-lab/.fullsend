@@ -34,6 +34,11 @@ on:
           - 'all'
           - 'comments_only'
           - 'new_issues_only'
+      test_notes_path:
+        description: 'Path to a local notes file (in repo) to use instead of Drive. Skips GCP auth.'
+        required: false
+        default: ''
+        type: string
 
 env:
   SCRIBE_DRY_RUN_DEFAULT: 'true'
@@ -96,18 +101,46 @@ jobs:
           private-key: ${{ secrets.FULLSEND_CODER_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - name: Resolve target repository
+      - name: Resolve target repositories
         id: target
         run: |
-          TARGET="${{ vars.SCRIBE_TARGET_REPO }}"
-          if [[ -z "${TARGET}" ]]; then
-            TARGET="${{ github.repository_owner }}/${{ github.event.repository.name }}"
-          elif [[ "${TARGET}" != */* ]]; then
-            TARGET="${{ github.repository_owner }}/${TARGET}"
+          OWNER="${{ github.repository_owner }}"
+          # Multi-repo: SCRIBE_TARGET_REPOS (comma-separated) takes precedence
+          MULTI="${{ vars.SCRIBE_TARGET_REPOS }}"
+          SINGLE="${{ vars.SCRIBE_TARGET_REPO }}"
+          if [[ -n "${MULTI}" ]]; then
+            # Normalize: ensure each entry is fully qualified (owner/repo)
+            RESOLVED=""
+            IFS=',' read -ra ENTRIES <<< "${MULTI}"
+            for entry in "${ENTRIES[@]}"; do
+              entry=$(echo "${entry}" | xargs)  # trim whitespace
+              if [[ -z "${entry}" ]]; then continue; fi
+              if [[ "${entry}" != */* ]]; then
+                entry="${OWNER}/${entry}"
+              fi
+              if [[ -n "${RESOLVED}" ]]; then
+                RESOLVED="${RESOLVED},${entry}"
+              else
+                RESOLVED="${entry}"
+              fi
+            done
+            echo "repos=${RESOLVED}" >> "${GITHUB_OUTPUT}"
+            # Use first repo as the primary for backward-compat contexts
+            FIRST=$(echo "${RESOLVED}" | cut -d',' -f1)
+            echo "repo=${FIRST}" >> "${GITHUB_OUTPUT}"
+          elif [[ -n "${SINGLE}" ]]; then
+            if [[ "${SINGLE}" != */* ]]; then
+              SINGLE="${OWNER}/${SINGLE}"
+            fi
+            echo "repos=${SINGLE}" >> "${GITHUB_OUTPUT}"
+            echo "repo=${SINGLE}" >> "${GITHUB_OUTPUT}"
+          else
+            DEFAULT="${OWNER}/${{ github.event.repository.name }}"
+            echo "repos=${DEFAULT}" >> "${GITHUB_OUTPUT}"
+            echo "repo=${DEFAULT}" >> "${GITHUB_OUTPUT}"
           fi
-          echo "repo=${TARGET}" >> "${GITHUB_OUTPUT}"
 
-      - name: Checkout target repository
+      - name: Checkout primary target repository
         uses: actions/checkout@v6
         with:
           repository: ${{ steps.target.outputs.repo }}
@@ -116,11 +149,13 @@ jobs:
           fetch-depth: 1
 
       - name: Authenticate to Google Cloud
+        if: ${{ !inputs.test_notes_path }}
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
 
       - name: Mask GCP credential file paths
+        if: ${{ !inputs.test_notes_path }}
         run: |
           for var in GOOGLE_GHA_CREDS_PATH GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE; do
             val="${!var:-}"
@@ -130,6 +165,7 @@ jobs:
           done
 
       - name: Write Drive SA credentials
+        if: ${{ !inputs.test_notes_path }}
         env:
           SCRIBE_SA_KEY: ${{ secrets.SCRIBE_GCP_SA_KEY_JSON }}
         run: |
@@ -147,12 +183,15 @@ jobs:
           SCRIBE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SCRIBE_CONTENTS_TOKEN: ${{ steps.contents-token.outputs.token }}
           SCRIBE_REPO: ${{ steps.target.outputs.repo }}
+          SCRIBE_TARGET_REPOS: ${{ steps.target.outputs.repos }}
           SCRIBE_SEARCH_QUERY: ${{ vars.SCRIBE_GDRIVE_SEARCH_QUERY }}
           SCRIBE_NAME_FILTER: ${{ vars.SCRIBE_GDRIVE_NAME_FILTER || '' }}
           SCRIBE_LOOKBACK_HOURS: ${{ steps.config.outputs.lookback }}
           SCRIBE_DRY_RUN: ${{ steps.config.outputs.dry_run }}
           SCRIBE_MIN_CONFIDENCE: ${{ steps.config.outputs.min_confidence }}
           SCRIBE_MODE: ${{ steps.config.outputs.mode }}
+          SCRIBE_DISCOVER_REPOS: ${{ vars.SCRIBE_DISCOVER_REPOS || 'true' }}
+          SCRIBE_TEST_NOTES_FILE: ${{ inputs.test_notes_path && format('{0}/{1}', github.workspace, inputs.test_notes_path) || '' }}
           SCRIBE_SLACK_WEBHOOK_URL: ${{ secrets.SCRIBE_SLACK_WEBHOOK_URL }}
           SCRIBE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           SCRIBE_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}

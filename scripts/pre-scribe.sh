@@ -6,12 +6,22 @@
 # strips sensitive content, and prepares input files the agent will read.
 #
 # Required env vars:
-#   SCRIBE_REPO           — GitHub repository (owner/name)
+#   SCRIBE_REPO           — Primary GitHub repository (owner/name)
 #   SCRIBE_SEARCH_QUERY   — Drive doc name search (e.g. "team sync")
 #   GH_TOKEN              — GitHub token for backlog fetch
 #   GOOGLE_APPLICATION_CREDENTIALS — path to GCP SA credentials
 #
 # Optional env vars:
+#   SCRIBE_TARGET_REPOS   — Comma-separated list of base target repos
+#                           (always included). Falls back to SCRIBE_REPO
+#                           if unset.
+#   SCRIBE_DISCOVER_REPOS — "true" (default) to auto-discover repos from
+#                           GitHub URLs found in the meeting notes. Set to
+#                           "false" to disable discovery and use only the
+#                           static SCRIBE_TARGET_REPOS list.
+#   SCRIBE_TEST_NOTES_FILE — Path to a local file to use instead of
+#                            downloading from Drive. Skips all GCP auth and
+#                            Drive API calls. Useful for dry-run testing.
 #   SCRIBE_NAME_FILTER    — substring filter on doc names
 #   SCRIBE_LOOKBACK_HOURS — how far back to search (default: 3)
 
@@ -29,62 +39,34 @@ LOOKBACK="${SCRIBE_LOOKBACK_HOURS:-3}"
 CUTOFF_DATE=$(date -u -d "${LOOKBACK} hours ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
   || date -u -v-"${LOOKBACK}"H +"%Y-%m-%dT%H:%M:%SZ")
 
-echo "Scribe pre-script: searching Drive for docs matching '${SCRIBE_SEARCH_QUERY}' since ${CUTOFF_DATE}"
+echo "Scribe pre-script: searching Drive for docs matching '${SCRIBE_SEARCH_QUERY:-}' since ${CUTOFF_DATE}"
+
+# Derive the org from SCRIBE_REPO for repo discovery filtering
+SCRIBE_ORG="${SCRIBE_REPO%%/*}"
+DISCOVER_REPOS="${SCRIBE_DISCOVER_REPOS:-true}"
+MAX_DISCOVERED="${SCRIBE_MAX_DISCOVERED_REPOS:-15}"
 
 # ============================================================
-# Repo context — issues, PRs, and doc index
+# Phase 1: Download meeting notes from Google Drive
+#           (skipped entirely when SCRIBE_TEST_NOTES_FILE is set)
 # ============================================================
 
-CLOSED_ISSUES_FILE="${WORK_DIR}/closed-issues.json"
-OPEN_PRS_FILE="${WORK_DIR}/open-prs.json"
-REPO_DOCS_FILE="${WORK_DIR}/repo-docs-index.json"
+if [[ -n "${SCRIBE_TEST_NOTES_FILE:-}" ]]; then
+  echo "TEST MODE: using local notes file instead of Drive"
+  if [[ ! -f "${SCRIBE_TEST_NOTES_FILE}" ]]; then
+    echo "ERROR: SCRIBE_TEST_NOTES_FILE does not exist: ${SCRIBE_TEST_NOTES_FILE}"
+    exit 1
+  fi
+  cp "${SCRIBE_TEST_NOTES_FILE}" "${NOTES_DIR}/doc-0.txt"
+  echo "test-mode://local-file" > "${NOTES_DIR}/doc-0.url"
+  DOC_COUNT=1
+  DOC_INDEX=1
+  NOTES_URL="test-mode://local-file"
+  echo "Loaded 1 test document ($(wc -c < "${SCRIBE_TEST_NOTES_FILE}") bytes)"
+fi
 
-# Open issues with bodies (truncated to 500 chars to keep context lean)
-echo "Fetching open issues from ${SCRIBE_REPO}..."
-gh issue list --repo "${SCRIBE_REPO}" --state open \
-  --json number,title,body,labels,milestone,url --limit 500 \
-  | jq '[.[] | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
-  > "${BACKLOG_FILE}"
-ISSUE_COUNT=$(jq 'length' "${BACKLOG_FILE}")
-echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
-
-# Recently closed issues (last 50) — helps avoid duplicates and enables
-# "this was resolved in #N" references
-echo "Fetching recently closed issues..."
-gh issue list --repo "${SCRIBE_REPO}" --state closed \
-  --json number,title,labels,url --limit 50 \
-  > "${CLOSED_ISSUES_FILE}"
-CLOSED_COUNT=$(jq 'length' "${CLOSED_ISSUES_FILE}")
-echo "Fetched ${CLOSED_COUNT} recently closed issues."
-
-# Open PRs — gives awareness of in-flight work so the agent can link
-# meeting topics about "the caching PR" to actual PR numbers.
-# Uses CONTENTS_TOKEN (coder app) which has pull_requests:write scope.
-CONTENTS_GH="${CONTENTS_TOKEN:-${GH_TOKEN}}"
-echo "Fetching open pull requests..."
-GH_TOKEN="${CONTENTS_GH}" gh pr list --repo "${SCRIBE_REPO}" --state open \
-  --json number,title,labels,url,headRefName --limit 100 \
-  > "${OPEN_PRS_FILE}"
-PR_COUNT=$(jq 'length' "${OPEN_PRS_FILE}")
-echo "Fetched ${PR_COUNT} open pull requests."
-
-# Repo doc index — ADRs, problem docs, guides. One API call using the
-# git tree (recursive) so the agent can reference docs by path.
-# Uses CONTENTS_TOKEN (coder app) which has contents:read scope.
-echo "Fetching repo doc index..."
-GH_TOKEN="${CONTENTS_GH}" gh api "repos/${SCRIBE_REPO}/git/trees/main?recursive=1" \
-  --jq '[.tree[] | select(.path | startswith("docs/") and (.path | endswith(".md"))) | .path]' \
-  > "${REPO_DOCS_FILE}" 2>/dev/null || echo '[]' > "${REPO_DOCS_FILE}"
-DOC_PATH_COUNT=$(jq 'length' "${REPO_DOCS_FILE}")
-echo "Indexed ${DOC_PATH_COUNT} doc paths from repo tree."
-
+if [[ -z "${SCRIBE_TEST_NOTES_FILE:-}" ]]; then
 # --- Obtain Drive-scoped access token ---
-# The Drive API is a Workspace API that requires its own OAuth scope
-# (drive.readonly). The default cloud-platform scope from gcloud doesn't
-# cover it. Mint a Drive-scoped token from the SA key using a signed JWT,
-# matching what the Go code does with google.CredentialsFromJSON.
-# SCRIBE_DRIVE_CREDENTIALS points to the SA key that has been invited to the
-# Google Calendar meeting (separate from the Vertex AI SA).
 SA_KEY_FILE="${SCRIBE_DRIVE_CREDENTIALS:-${GOOGLE_APPLICATION_CREDENTIALS:-}}"
 if [[ -z "${SA_KEY_FILE}" || ! -f "${SA_KEY_FILE}" ]]; then
   echo "ERROR: neither SCRIBE_DRIVE_CREDENTIALS nor GOOGLE_APPLICATION_CREDENTIALS is set or file missing"
@@ -160,23 +142,9 @@ if [[ "${DOC_COUNT}" -gt 0 ]]; then
   jq -r '.files[] | "  \(.name) (created: \(.createdTime))"' "${WORK_DIR}/drive-response.json"
 fi
 
-if [[ "${DOC_COUNT}" -eq 0 ]]; then
-  echo "No documents found — agent will produce empty result."
-  rm -f "${WORK_DIR}/drive-response.json"
-  unset ACCESS_TOKEN SA_EMAIL
-  jq -n \
-    --arg cutoff "${CUTOFF_DATE}" \
-    --arg repo "${SCRIBE_REPO}" \
-    --argjson doc_count 0 \
-    --argjson issue_count "${ISSUE_COUNT}" \
-    --argjson closed_count "${CLOSED_COUNT}" \
-    --argjson pr_count "${PR_COUNT}" \
-    --argjson doc_path_count "${DOC_PATH_COUNT}" \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
-    > "${META_FILE}"
-  echo "Workspace: ${WORK_DIR}"
-  exit 0
-fi
+# ============================================================
+# Phase 2: Download and scrub each document
+# ============================================================
 
 MAX_DOC_BYTES=$((2 * 1024 * 1024))  # 2 MiB cap per document
 
@@ -233,19 +201,10 @@ while read -r doc; do
   fi
 
   # --- Suspicious Unicode removal (prompt injection defense) ---
-  # Strip tag characters (U+E0000–E007F), zero-width chars, BOM, bidi overrides
   CLEAN_UNICODE=$(printf '%s' "${RAW_TEXT}" \
     | perl -CS -pe 's/[\x{E0000}-\x{E007F}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]//g')
 
   # --- Structural scrubbing (Gemini meeting notes format) ---
-  # Gemini notes have: Summary (safe, uses "the team"/"participants"),
-  # Next steps (has [Person Name] attributions), and Details (near-verbatim
-  # transcript with extensive per-person attributions). The Details section
-  # is the primary leakage risk — it's essentially a private transcript
-  # with statements attributed to named individuals.
-  #
-  # Strategy: keep Summary + Next steps (with names stripped), drop Details
-  # and everything after it (transcript, timestamps, editor boilerplate).
   STRUCTURAL_SCRUB=$(printf '%s' "${CLEAN_UNICODE}" \
     | tr -d '\r' \
     | sed -E '/^Invited /d' \
@@ -256,7 +215,6 @@ while read -r doc; do
     | sed -E 's/\[[A-Z][a-zA-Z .,-]+\]/[attendee]/g')
 
   # --- PII pattern scrubbing ---
-  # Ordered: specific patterns first, generic last (matches Go sanitizer.go)
   SCRUBBED=$(echo "${STRUCTURAL_SCRUB}" \
     | sed -E 's/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/[REDACTED]/g' \
     | sed -E 's/\b(\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b/[REDACTED]/g' \
@@ -288,10 +246,182 @@ if [[ -f "${NOTES_DIR}/doc-0.url" ]]; then
   NOTES_URL=$(cat "${NOTES_DIR}/doc-0.url")
 fi
 
+# Cleanup Drive API response (contains doc IDs and metadata)
+rm -f "${WORK_DIR}/drive-response.json" "${WORK_DIR}/doc-export-tmp"
+unset ACCESS_TOKEN SA_EMAIL
+
+fi  # end of: if [[ -z "${SCRIBE_TEST_NOTES_FILE:-}" ]]
+
+# ============================================================
+# Phase 3: Discover repos from meeting notes + build target list
+# ============================================================
+
+# Start with the static base repos
+BASE_REPOS_LIST=()
+if [[ -n "${SCRIBE_TARGET_REPOS:-}" ]]; then
+  IFS=',' read -ra BASE_REPOS_LIST <<< "${SCRIBE_TARGET_REPOS}"
+  for idx in "${!BASE_REPOS_LIST[@]}"; do
+    BASE_REPOS_LIST[$idx]=$(echo "${BASE_REPOS_LIST[$idx]}" | xargs)
+  done
+else
+  BASE_REPOS_LIST=("${SCRIBE_REPO}")
+fi
+
+# Discover repos referenced in the meeting notes
+DISCOVERED_REPOS=()
+if [[ "${DISCOVER_REPOS}" == "true" ]] && [[ "${DOC_INDEX}" -gt 0 ]]; then
+  echo ""
+  echo "Scanning meeting notes for GitHub repo references (org: ${SCRIBE_ORG})..."
+
+  # Extract unique owner/repo from github.com URLs in the scrubbed notes.
+  # Matches github.com/owner/repo from URLs (ignoring further path segments).
+  DISCOVERED_RAW=$(cat "${NOTES_DIR}"/doc-*.txt 2>/dev/null \
+    | grep -oP "github\.com/${SCRIBE_ORG}/\K[a-zA-Z0-9._-]+" \
+    | sort -u || true)
+
+  while IFS= read -r repo_name; do
+    [[ -z "${repo_name}" ]] && continue
+    FULL_REPO="${SCRIBE_ORG}/${repo_name}"
+    # Skip if already in the base list
+    ALREADY=false
+    for existing in "${BASE_REPOS_LIST[@]}"; do
+      if [[ "${existing}" == "${FULL_REPO}" ]]; then
+        ALREADY=true
+        break
+      fi
+    done
+    if [[ "${ALREADY}" == "false" ]]; then
+      if [[ ${#DISCOVERED_REPOS[@]} -ge ${MAX_DISCOVERED} ]]; then
+        echo "  WARNING: hit discovery cap (${MAX_DISCOVERED}), ignoring further repos"
+        break
+      fi
+      DISCOVERED_REPOS+=("${FULL_REPO}")
+    fi
+  done <<< "${DISCOVERED_RAW}"
+
+  if [[ ${#DISCOVERED_REPOS[@]} -gt 0 ]]; then
+    echo "Discovered ${#DISCOVERED_REPOS[@]} additional repo(s) from notes: ${DISCOVERED_REPOS[*]}"
+  else
+    echo "No additional repos discovered from notes."
+  fi
+fi
+
+# Combine base + discovered into the final target list
+TARGET_REPOS_LIST=("${BASE_REPOS_LIST[@]}")
+if [[ ${#DISCOVERED_REPOS[@]} -gt 0 ]]; then
+  TARGET_REPOS_LIST+=("${DISCOVERED_REPOS[@]}")
+fi
+
+echo ""
+echo "Final target repositories (${#TARGET_REPOS_LIST[@]}): ${TARGET_REPOS_LIST[*]}"
+
+# Handle the no-docs-found early exit
+if [[ "${DOC_COUNT}" -eq 0 ]]; then
+  echo "No documents found — agent will produce empty result."
+  TARGET_REPOS_JSON=$(printf '%s\n' "${TARGET_REPOS_LIST[@]}" | jq -R . | jq -s .)
+  jq -n \
+    --arg cutoff "${CUTOFF_DATE}" \
+    --arg repo "${SCRIBE_REPO}" \
+    --argjson target_repos "${TARGET_REPOS_JSON}" \
+    --argjson doc_count 0 \
+    --argjson issue_count 0 \
+    --argjson closed_count 0 \
+    --argjson pr_count 0 \
+    --argjson doc_path_count 0 \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, target_repos: $target_repos, docs_downloaded: $doc_count, backlog_issues: $issue_count, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    > "${META_FILE}"
+  echo "Workspace: ${WORK_DIR}"
+  exit 0
+fi
+
+# ============================================================
+# Phase 4: Fetch repo context (issues, PRs, docs) from targets
+# ============================================================
+
+CLOSED_ISSUES_FILE="${WORK_DIR}/closed-issues.json"
+OPEN_PRS_FILE="${WORK_DIR}/open-prs.json"
+REPO_DOCS_FILE="${WORK_DIR}/repo-docs-index.json"
+
+echo '[]' > "${BACKLOG_FILE}"
+echo '[]' > "${CLOSED_ISSUES_FILE}"
+echo '[]' > "${OPEN_PRS_FILE}"
+echo '[]' > "${REPO_DOCS_FILE}"
+
+ISSUE_COUNT=0
+CLOSED_COUNT=0
+PR_COUNT=0
+DOC_PATH_COUNT=0
+
+CONTENTS_GH="${CONTENTS_TOKEN:-${GH_TOKEN}}"
+
+for TARGET_REPO in "${TARGET_REPOS_LIST[@]}"; do
+  echo ""
+  echo "--- Fetching context from ${TARGET_REPO} ---"
+
+  # Open issues with bodies (truncated to 500 chars to keep context lean)
+  echo "Fetching open issues from ${TARGET_REPO}..."
+  REPO_ISSUES=$(gh issue list --repo "${TARGET_REPO}" --state open \
+    --json number,title,body,labels,milestone,url --limit 500 \
+    | jq --arg repo "${TARGET_REPO}" \
+      '[.[] | .repo = $repo | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]')
+  REPO_ISSUE_COUNT=$(echo "${REPO_ISSUES}" | jq 'length')
+  echo "Fetched ${REPO_ISSUE_COUNT} open issues from ${TARGET_REPO}."
+  ISSUE_COUNT=$((ISSUE_COUNT + REPO_ISSUE_COUNT))
+
+  jq -s '.[0] + .[1]' "${BACKLOG_FILE}" <(echo "${REPO_ISSUES}") > "${BACKLOG_FILE}.tmp"
+  mv "${BACKLOG_FILE}.tmp" "${BACKLOG_FILE}"
+
+  # Recently closed issues (last 50 per repo)
+  echo "Fetching recently closed issues from ${TARGET_REPO}..."
+  REPO_CLOSED=$(gh issue list --repo "${TARGET_REPO}" --state closed \
+    --json number,title,labels,url --limit 50 \
+    | jq --arg repo "${TARGET_REPO}" '[.[] | .repo = $repo]')
+  REPO_CLOSED_COUNT=$(echo "${REPO_CLOSED}" | jq 'length')
+  echo "Fetched ${REPO_CLOSED_COUNT} recently closed issues from ${TARGET_REPO}."
+  CLOSED_COUNT=$((CLOSED_COUNT + REPO_CLOSED_COUNT))
+
+  jq -s '.[0] + .[1]' "${CLOSED_ISSUES_FILE}" <(echo "${REPO_CLOSED}") > "${CLOSED_ISSUES_FILE}.tmp"
+  mv "${CLOSED_ISSUES_FILE}.tmp" "${CLOSED_ISSUES_FILE}"
+
+  # Open PRs
+  echo "Fetching open pull requests from ${TARGET_REPO}..."
+  REPO_PRS=$(GH_TOKEN="${CONTENTS_GH}" gh pr list --repo "${TARGET_REPO}" --state open \
+    --json number,title,labels,url,headRefName --limit 100 \
+    | jq --arg repo "${TARGET_REPO}" '[.[] | .repo = $repo]')
+  REPO_PR_COUNT=$(echo "${REPO_PRS}" | jq 'length')
+  echo "Fetched ${REPO_PR_COUNT} open pull requests from ${TARGET_REPO}."
+  PR_COUNT=$((PR_COUNT + REPO_PR_COUNT))
+
+  jq -s '.[0] + .[1]' "${OPEN_PRS_FILE}" <(echo "${REPO_PRS}") > "${OPEN_PRS_FILE}.tmp"
+  mv "${OPEN_PRS_FILE}.tmp" "${OPEN_PRS_FILE}"
+
+  # Repo doc index
+  echo "Fetching repo doc index from ${TARGET_REPO}..."
+  REPO_DOCS=$(GH_TOKEN="${CONTENTS_GH}" gh api "repos/${TARGET_REPO}/git/trees/main?recursive=1" \
+    --jq "[.tree[] | select(.path | startswith(\"docs/\") and (.path | endswith(\".md\"))) | {path: .path, repo: \"${TARGET_REPO}\"}]" \
+    2>/dev/null || echo '[]')
+  REPO_DOC_COUNT=$(echo "${REPO_DOCS}" | jq 'length')
+  echo "Indexed ${REPO_DOC_COUNT} doc paths from ${TARGET_REPO}."
+  DOC_PATH_COUNT=$((DOC_PATH_COUNT + REPO_DOC_COUNT))
+
+  jq -s '.[0] + .[1]' "${REPO_DOCS_FILE}" <(echo "${REPO_DOCS}") > "${REPO_DOCS_FILE}.tmp"
+  mv "${REPO_DOCS_FILE}.tmp" "${REPO_DOCS_FILE}"
+done
+
+echo ""
+echo "Aggregate context: ${ISSUE_COUNT} open issues, ${CLOSED_COUNT} closed, ${PR_COUNT} PRs, ${DOC_PATH_COUNT} doc paths across ${#TARGET_REPOS_LIST[@]} repo(s)."
+
+# ============================================================
+# Phase 5: Write metadata
+# ============================================================
+
+TARGET_REPOS_JSON=$(printf '%s\n' "${TARGET_REPOS_LIST[@]}" | jq -R . | jq -s .)
+
 jq -n \
   --arg cutoff "${CUTOFF_DATE}" \
   --arg notes_url "${NOTES_URL}" \
   --arg repo "${SCRIBE_REPO}" \
+  --argjson target_repos "${TARGET_REPOS_JSON}" \
   --argjson doc_count "${DOC_COUNT}" \
   --argjson issue_count "${ISSUE_COUNT}" \
   --argjson closed_count "${CLOSED_COUNT}" \
@@ -301,16 +431,13 @@ jq -n \
     cutoff_date: $cutoff,
     notes_url: $notes_url,
     repo: $repo,
+    target_repos: $target_repos,
     docs_downloaded: $doc_count,
     backlog_issues: $issue_count,
     closed_issues: $closed_count,
     open_prs: $pr_count,
     repo_docs: $doc_path_count
   }' > "${META_FILE}"
-
-# Cleanup: remove Drive API response (contains doc IDs and metadata)
-rm -f "${WORK_DIR}/drive-response.json" "${WORK_DIR}/doc-export-tmp"
-unset ACCESS_TOKEN SA_EMAIL
 
 echo "Pre-scribe complete. ${DOC_COUNT} docs scraped, ${ISSUE_COUNT} issues + ${CLOSED_COUNT} closed + ${PR_COUNT} PRs + ${DOC_PATH_COUNT} doc paths."
 echo "Workspace: ${WORK_DIR}"
