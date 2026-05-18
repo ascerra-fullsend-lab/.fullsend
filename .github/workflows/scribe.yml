@@ -149,13 +149,11 @@ jobs:
           fetch-depth: 1
 
       - name: Authenticate to Google Cloud
-        if: ${{ !inputs.test_notes_path }}
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
 
       - name: Mask GCP credential file paths
-        if: ${{ !inputs.test_notes_path }}
         run: |
           for var in GOOGLE_GHA_CREDS_PATH GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE; do
             val="${!var:-}"
