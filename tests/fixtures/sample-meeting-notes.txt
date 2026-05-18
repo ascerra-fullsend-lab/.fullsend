@@ -7,68 +7,58 @@ Agenda:
 1. Fix agent gating for human-authored PRs
 2. String reversal utility progress
 3. CI pipeline reliability
+4. Retry logic for the fix agent
 
 ---
 
-## Fix agent gating for human-authored PRs
+## Fix agent behavior on human PRs
 
-Discussion around the current behavior in
-https://github.com/ascerra-fullsend-lab/human-pr-fix-test where the fix
-agent is still triggering on PRs authored by humans. The expectation is
-that the agent should only auto-fix PRs opened by bots or other agents.
+So the fix agent is still firing on PRs that humans open. We talked about
+this before — the expectation was that it should only auto-fix stuff opened
+by bots or other agents. The human PR fix test repo is where we've been
+testing this behavior.
 
-Decision: add a label check — if PR has `human-authored` label, skip the
-fix agent entirely. This avoids false positives where the agent rewrites
-intentional human changes.
+Decision: add a label check — if a PR has the `human-authored` label, the
+fix agent just skips it entirely. Keeps things simple and avoids those
+false positives where the agent rewrites intentional human changes.
 
-Next steps: implement label gating in the workflow trigger conditions.
+Next steps: implement the label gating in the workflow trigger conditions.
 
 ## String reversal utility
 
-The string reversal utility tracked in
-https://github.com/ascerra-fullsend-lab/human-pr-fix-test/issues/3 was
-discussed. Current implementation only handles ASCII. Need to support
-Unicode grapheme clusters (e.g. emoji sequences).
+We looked at the string reversal utility progress. The current implementation
+only handles ASCII and we need Unicode grapheme cluster support eventually —
+like emoji sequences and combining characters. We discussed three options:
 
-Options considered:
-- Use ICU4C via FFI — heavy dependency
-- Use Go's `golang.org/x/text/unicode/norm` — lighter
-- Accept ASCII-only for v1 and iterate
+- ICU4C via FFI — too heavy of a dependency for this
+- Go's text/unicode/norm package — lighter weight
+- Just ship ASCII-only for v1 and iterate from there
 
-Decision: go with ASCII-only for v1, file follow-up for Unicode support.
+Decision: go with ASCII-only for v1. We'll file a follow-up for the Unicode
+support. The PR for the basic implementation is ready for review.
 
-## CI pipeline reliability in fix-agent-test
+## CI pipeline reliability
 
-The CI matrix in https://github.com/ascerra-fullsend-lab/fix-agent-test
-has been flaky on the `ubuntu-latest` runner. Tests pass locally but
-intermittently fail in Actions due to race conditions in the test harness
-setup.
+The CI in the fix agent test repo has been really flaky on ubuntu-latest.
+Tests pass fine locally but there's some race condition in the test harness
+setup that causes intermittent failures in Actions.
 
-Options:
-- Add retry logic to the test step
-- Increase timeout and add explicit waits
-- Refactor test harness to use sequential setup
+We talked through a few options — retry logic on the test step, increasing
+timeouts, or refactoring the harness to do sequential setup. Nobody felt
+strongly enough to commit to an approach yet. Needs more investigation to
+nail down the root cause.
 
-No final decision — needs more investigation. Agreed to file an issue to
-track the flakiness.
+## Retry logic for transient failures
 
-## Add timeout and retry logic for fix agent
+The fix agent has no retry logic at all right now. If the LLM call times
+out or returns a 503, the whole fix attempt just fails silently. We need
+at least basic resilience here.
 
-Discussion about improving reliability of the fix agent in
-https://github.com/ascerra-fullsend-lab/fix-agent-test when it encounters
-transient failures. Currently if the LLM call times out or returns a 503,
-the entire fix attempt fails silently with no retry.
+We settled on exponential backoff with 3 retries as the first step. The
+circuit breaker pattern was discussed but deferred — overkill for now.
 
-Options considered:
-- Exponential backoff with 3 retries (simple, covers transient errors)
-- Circuit breaker pattern (more complex, better for sustained outages)
-- Combination: retry with backoff, then circuit-break after N consecutive failures
-
-Decision: implement exponential backoff with 3 retries as a first step.
-File an issue to track this. Circuit breaker can come later if needed.
-
-Acceptance criteria discussed:
-- Retry on 5xx and timeout errors only (not 4xx)
+Acceptance criteria we agreed on:
+- Only retry on 5xx and timeout errors, not 4xx
 - Maximum 3 attempts with exponential backoff (1s, 2s, 4s)
 - Log each retry attempt for observability
 - Fail gracefully after exhausting retries
@@ -77,6 +67,6 @@ Acceptance criteria discussed:
 
 Action items:
 - Implement label gating for fix agent
-- File issue for CI flakiness in fix-agent-test
+- File issue for CI flakiness
 - Unicode support follow-up for string reversal
-- File issue for retry logic in fix-agent-test
+- File issue for retry logic

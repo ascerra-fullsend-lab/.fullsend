@@ -267,21 +267,27 @@ else
   BASE_REPOS_LIST=("${SCRIBE_REPO}")
 fi
 
-# Discover repos referenced in the meeting notes
+# Discover repos referenced in the meeting notes via fuzzy name matching.
+# Real meeting transcripts use natural language ("the fix agent test repo")
+# not exact GitHub URLs. This fetches the org's repo list and matches names
+# with hyphens/underscores treated as optional word separators.
 DISCOVERED_REPOS=()
 if [[ "${DISCOVER_REPOS}" == "true" ]] && [[ "${DOC_INDEX}" -gt 0 ]]; then
   echo ""
-  echo "Scanning meeting notes for GitHub repo references (org: ${SCRIBE_ORG})..."
+  echo "Discovering repos from meeting notes (org: ${SCRIBE_ORG})..."
 
-  # Extract unique owner/repo from github.com URLs in the scrubbed notes.
-  # Matches github.com/owner/repo from URLs (ignoring further path segments).
-  DISCOVERED_RAW=$(cat "${NOTES_DIR}"/doc-*.txt 2>/dev/null \
-    | grep -oP "github\.com/${SCRIBE_ORG}/\K[a-zA-Z0-9._-]+" \
-    | sort -u || true)
+  # Fetch all repo names in the org (single API call)
+  ORG_REPOS=$(GH_TOKEN="${GH_TOKEN}" gh repo list "${SCRIBE_ORG}" --limit 500 --json name --jq '.[].name' 2>/dev/null || true)
+  ORG_REPO_COUNT=$(echo "${ORG_REPOS}" | grep -c . || echo "0")
+  echo "  Org has ${ORG_REPO_COUNT} repos. Matching against notes..."
+
+  # Concatenate all notes into one lowercase blob for matching
+  NOTES_BLOB=$(cat "${NOTES_DIR}"/doc-*.txt 2>/dev/null | tr '[:upper:]' '[:lower:]')
 
   while IFS= read -r repo_name; do
     [[ -z "${repo_name}" ]] && continue
     FULL_REPO="${SCRIBE_ORG}/${repo_name}"
+
     # Skip if already in the base list
     ALREADY=false
     for existing in "${BASE_REPOS_LIST[@]}"; do
@@ -290,14 +296,22 @@ if [[ "${DISCOVER_REPOS}" == "true" ]] && [[ "${DOC_INDEX}" -gt 0 ]]; then
         break
       fi
     done
-    if [[ "${ALREADY}" == "false" ]]; then
+    [[ "${ALREADY}" == "true" ]] && continue
+
+    # Build a case-insensitive pattern: replace hyphens/underscores/dots with
+    # flexible separators so "fix-agent-test" matches "fix agent test" or
+    # "fix_agent_test" or "fix-agent-test" in the notes.
+    PATTERN=$(echo "${repo_name}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[-_.]+/[[:space:]_.-]?/g')
+
+    if echo "${NOTES_BLOB}" | grep -qP "${PATTERN}"; then
       if [[ ${#DISCOVERED_REPOS[@]} -ge ${MAX_DISCOVERED} ]]; then
         echo "  WARNING: hit discovery cap (${MAX_DISCOVERED}), ignoring further repos"
         break
       fi
       DISCOVERED_REPOS+=("${FULL_REPO}")
+      echo "  Matched: ${repo_name}"
     fi
-  done <<< "${DISCOVERED_RAW}"
+  done <<< "${ORG_REPOS}"
 
   if [[ ${#DISCOVERED_REPOS[@]} -gt 0 ]]; then
     echo "Discovered ${#DISCOVERED_REPOS[@]} additional repo(s) from notes: ${DISCOVERED_REPOS[*]}"
