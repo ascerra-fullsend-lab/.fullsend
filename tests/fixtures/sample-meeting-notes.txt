@@ -52,11 +52,26 @@ Options:
 No final decision — needs more investigation. Agreed to file an issue to
 track the flakiness.
 
-## .fullsend configuration updates
+## Add timeout and retry logic for fix agent
 
-Brief mention of updating the scribe agent schedule in
-https://github.com/ascerra-fullsend-lab/.fullsend to run less frequently
-during weekends. No action item — just awareness.
+Discussion about improving reliability of the fix agent in
+https://github.com/ascerra-fullsend-lab/fix-agent-test when it encounters
+transient failures. Currently if the LLM call times out or returns a 503,
+the entire fix attempt fails silently with no retry.
+
+Options considered:
+- Exponential backoff with 3 retries (simple, covers transient errors)
+- Circuit breaker pattern (more complex, better for sustained outages)
+- Combination: retry with backoff, then circuit-break after N consecutive failures
+
+Decision: implement exponential backoff with 3 retries as a first step.
+File an issue to track this. Circuit breaker can come later if needed.
+
+Acceptance criteria discussed:
+- Retry on 5xx and timeout errors only (not 4xx)
+- Maximum 3 attempts with exponential backoff (1s, 2s, 4s)
+- Log each retry attempt for observability
+- Fail gracefully after exhausting retries
 
 ---
 
@@ -64,3 +79,4 @@ Action items:
 - Implement label gating for fix agent
 - File issue for CI flakiness in fix-agent-test
 - Unicode support follow-up for string reversal
+- File issue for retry logic in fix-agent-test
