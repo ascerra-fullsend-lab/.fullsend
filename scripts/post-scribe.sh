@@ -54,11 +54,16 @@ echo "Mode: ${SCRIBE_MODE}"
 # ============================================================
 # Build target repo allowlist for routing validation
 # ============================================================
-# The authoritative list lives in scribe-meta.json (written by pre-script,
-# includes both static and dynamically discovered repos). Fall back to the
-# static env var, then to SCRIBE_REPO.
+# The allowlist includes:
+#   1. Base repos from metadata target_repos (pre-fetched by pre-script)
+#   2. All repos in the org catalog (agent may discover any of these)
+# This ensures the agent can route to repos it discovered from notes,
+# while still preventing writes to repos outside the org.
 ALLOWED_REPOS=()
 META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
+ORG_REPOS_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/org-repos.json"
+
+# Add base repos from metadata
 if [[ -f "${META_FILE}" ]]; then
   while IFS= read -r repo_entry; do
     [[ -z "${repo_entry}" ]] && continue
@@ -66,6 +71,20 @@ if [[ -f "${META_FILE}" ]]; then
   done < <(jq -r '.target_repos[]?' "${META_FILE}" 2>/dev/null)
 fi
 
+# Add all org repos from catalog (the agent can discover any of these)
+if [[ -f "${ORG_REPOS_FILE}" ]]; then
+  while IFS= read -r repo_entry; do
+    [[ -z "${repo_entry}" ]] && continue
+    # Dedup: skip if already in list
+    ALREADY=false
+    for existing in "${ALLOWED_REPOS[@]:-}"; do
+      [[ "${existing}" == "${repo_entry}" ]] && ALREADY=true && break
+    done
+    [[ "${ALREADY}" == "false" ]] && ALLOWED_REPOS+=("${repo_entry}")
+  done < <(jq -r '.[].full_name' "${ORG_REPOS_FILE}" 2>/dev/null)
+fi
+
+# Fallback
 if [[ ${#ALLOWED_REPOS[@]} -eq 0 ]]; then
   if [[ -n "${SCRIBE_TARGET_REPOS:-}" ]]; then
     IFS=',' read -ra ALLOWED_REPOS <<< "${SCRIBE_TARGET_REPOS}"
@@ -76,7 +95,7 @@ if [[ ${#ALLOWED_REPOS[@]} -eq 0 ]]; then
     ALLOWED_REPOS=("${SCRIBE_REPO}")
   fi
 fi
-echo "Allowed target repos (${#ALLOWED_REPOS[@]}): ${ALLOWED_REPOS[*]}"
+echo "Allowed target repos (${#ALLOWED_REPOS[@]} from org catalog + base)"
 
 is_allowed_repo() {
   local repo="$1"

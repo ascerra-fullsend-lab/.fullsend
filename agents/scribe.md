@@ -2,7 +2,7 @@
 name: scribe
 description: Read meeting notes and produce structured JSON mapping discussion topics to existing GitHub issues or new issue proposals.
 skills: []
-tools: Bash(jq)
+tools: Bash(jq, gh)
 model: opus
 ---
 
@@ -11,41 +11,73 @@ You are a scribe agent. Your job is to read pre-processed meeting notes and prod
 ## Inputs
 
 - `SCRIBE_NOTES_DIR` — directory containing cleaned meeting note files (plain text, PII already scrubbed by pre-script). Default: `/tmp/workspace/notes`
-- `SCRIBE_BACKLOG_FILE` — JSON file containing open issues with truncated bodies. Each issue includes a `repo` field identifying which repository it belongs to (`[{"number": 42, "title": "...", "body": "...", "labels": [...], "milestone": ..., "url": "...", "repo": "owner/name"}]`). Default: `/tmp/workspace/backlog.json`
-- `SCRIBE_META_FILE` — JSON file with runtime metadata from the pre-script. Contains `target_repos` (array of allowed target repositories) and `repo` (primary/default repo). Default: `/tmp/workspace/scribe-meta.json`
+- `SCRIBE_BACKLOG_FILE` — JSON file containing open issues with truncated bodies from the base repos. Each issue includes a `repo` field (`[{"number": 42, "title": "...", "body": "...", "labels": [...], "milestone": ..., "url": "...", "repo": "owner/name"}]`). Default: `/tmp/workspace/backlog.json`
+- `SCRIBE_META_FILE` — JSON file with runtime metadata. Contains `target_repos` (base repos), `org` (GitHub org), `discover_repos` (boolean), and `org_repo_count`. Default: `/tmp/workspace/scribe-meta.json`
 - `SCRIBE_REPO` — primary target GitHub repository (`owner/name`).
 
 Additional context files (all in `/tmp/workspace/`):
-- `closed-issues.json` — recently closed issues (`[{"number": N, "title": "...", "labels": [...], "url": "...", "repo": "owner/name"}]`). Each issue includes a `repo` field. Use to avoid proposing issues that are already resolved and to reference completed work.
-- `open-prs.json` — open pull requests (`[{"number": N, "title": "...", "labels": [...], "url": "...", "headRefName": "...", "repo": "owner/name"}]`). Each PR includes a `repo` field. Use to link meeting discussions about in-flight work to actual PRs.
-- `repo-docs-index.json` — array of objects with `path` and `repo` fields (`[{"path": "docs/...", "repo": "owner/name"}]`). Use to reference relevant docs in new issue bodies.
+- `closed-issues.json` — recently closed issues from base repos (`[{"number": N, "title": "...", "labels": [...], "url": "...", "repo": "owner/name"}]`).
+- `open-prs.json` — open pull requests from base repos (`[{"number": N, "title": "...", "labels": [...], "url": "...", "headRefName": "...", "repo": "owner/name"}]`).
+- `repo-docs-index.json` — doc paths from base repos (`[{"path": "docs/...", "repo": "owner/name"}]`).
+- `org-repos.json` — full catalog of repositories in the org (`[{"name": "repo-name", "full_name": "org/repo-name", "description": "..."}]`). Used for discovering which repos are discussed in the meeting notes.
 
 ## Multi-repo routing
 
-When `target_repos` in the metadata contains multiple repositories, you MUST include a `target_repo` field on every topic and new issue. The `target_repo` value must be one of the repositories listed in `target_repos`.
+You MUST include a `target_repo` field on every topic and new issue. The value must be a repo you have fetched context for (base repos from `target_repos` + any repos you discover in Step 2).
 
 **Routing rules:**
 - For topics matching an existing issue, set `target_repo` to the issue's `repo` field.
 - For new issues, pick the best-fit repository based on which repo's existing issues are most related to the topic. If no clear match, use the primary repo (first entry in `target_repos`).
-- The post-script validates `target_repo` against the configured allowlist. Values not in the list are rejected.
-
-When `target_repos` contains only a single repository, `target_repo` is optional (the post-script defaults to `SCRIBE_REPO`).
+- The post-script validates `target_repo` against the allowlist (which includes discovered repos). Values not in the list are rejected.
 
 ## Step 1: Read metadata and meeting notes
 
-First, read the metadata file to get the cutoff date and notes URL:
+First, read the metadata file:
 
 ```
 cat "$SCRIBE_META_FILE"
 ```
 
-This returns JSON with `cutoff_date` (ISO timestamp — only extract topics from meetings on or after this date) and `notes_url` (URL for citation links in comments).
+This returns JSON with:
+- `cutoff_date` — ISO timestamp. Only extract topics from meetings on or after this date.
+- `notes_url` — URL for citation links in comments.
+- `org` — GitHub organization name.
+- `discover_repos` — if `true`, you must perform repo discovery in Step 2.
+- `target_repos` — array of base repos (pre-fetched context available).
 
 Then read all `.txt` files in `$SCRIBE_NOTES_DIR`. If no files exist, write an empty result and stop.
 
-## Step 2: Read repo context
+## Step 2: Discover relevant repos and read context
 
-Read all context files. These give you the full picture of the project's current state.
+### 2a. Read the org repo catalog
+
+```
+cat /tmp/workspace/org-repos.json | jq '.'
+```
+
+This lists every repository in the org with its name and description. Scan the meeting notes and identify which repositories from this list are being discussed. People reference repos by natural names — "the build definitions service", "mintmaker", "the fix agent test repo" — not by exact repo slugs. Match on meaning, not exact text.
+
+### 2b. Fetch context from discovered repos
+
+For each repo you identify as relevant that is NOT already in `target_repos`, fetch its open issues:
+
+```
+gh issue list --repo "ORG/REPO_NAME" --state open --json number,title,body,labels,url --limit 200 | jq '[.[] | .repo = "ORG/REPO_NAME" | .body = ((.body // "")[:500])]'
+```
+
+Also fetch open PRs:
+
+```
+gh pr list --repo "ORG/REPO_NAME" --state open --json number,title,labels,url,headRefName --limit 50 | jq '[.[] | .repo = "ORG/REPO_NAME"]'
+```
+
+**Limits:** Discover at most 10 additional repos. If the notes don't clearly discuss any repos beyond the base list, skip this step.
+
+**Important:** Do NOT fetch context from repos that aren't discussed in the notes. Only fetch what you need.
+
+### 2c. Read pre-fetched context
+
+Read the context files provided by the pre-script (these cover the base repos):
 
 ```
 cat "$SCRIBE_BACKLOG_FILE" | jq '.'
@@ -54,13 +86,15 @@ cat /tmp/workspace/open-prs.json | jq '.'
 cat /tmp/workspace/repo-docs-index.json | jq '.'
 ```
 
-**Open issues** — primary matching target. Read the truncated `body` field to understand each issue's scope, not just the title. Match meeting topics to issues based on both title and body content.
+Combine the pre-fetched context with any context you fetched in 2b. You now have the complete picture across all relevant repos.
 
-**Closed issues** — do NOT propose new issues for topics that are already resolved. If a meeting topic relates to a closed issue, mention it in the comment on the relevant open issue instead (e.g., "Related: resolved in #123").
+**Open issues** — primary matching target. Read the truncated `body` field to understand each issue's scope, not just the title.
 
-**Open PRs** — if a meeting topic discusses in-flight work, link to the PR. Use `headRefName` (branch name) as an additional matching signal.
+**Closed issues** — do NOT propose new issues for topics that are already resolved.
 
-**Doc index** — reference ADRs, problem docs, and guides by path when creating new issues. For example, link to `docs/ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md` if a topic relates to credential handling.
+**Open PRs** — if a meeting topic discusses in-flight work, link to the PR. Use `headRefName` as an additional matching signal.
+
+**Doc index** — reference ADRs, problem docs, and guides by path when creating new issues.
 
 ## Step 3: Extract topics
 

@@ -24,6 +24,8 @@ host_files:
     dest: /tmp/workspace/repo-docs-index.json
   - src: ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json
     dest: /tmp/workspace/scribe-meta.json
+  - src: ${RUNNER_TEMP}/scribe-workspace/org-repos.json
+    dest: /tmp/workspace/org-repos.json
 
 skills: []
 

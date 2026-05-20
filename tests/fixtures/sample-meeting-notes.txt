@@ -15,8 +15,8 @@ Agenda:
 
 So the fix agent is still firing on PRs that humans open. We talked about
 this before — the expectation was that it should only auto-fix stuff opened
-by bots or other agents. The human PR fix test repo is where we've been
-testing this behavior.
+by bots or other agents. We've been testing this behavior in the repo that
+has those human PR gating scenarios.
 
 Decision: add a label check — if a PR has the `human-authored` label, the
 fix agent just skips it entirely. Keeps things simple and avoids those
@@ -39,9 +39,9 @@ support. The PR for the basic implementation is ready for review.
 
 ## CI pipeline reliability
 
-The CI in the fix agent test repo has been really flaky on ubuntu-latest.
-Tests pass fine locally but there's some race condition in the test harness
-setup that causes intermittent failures in Actions.
+The CI in the fix agent test environment has been really flaky on
+ubuntu-latest. Tests pass fine locally but there's some race condition in
+the test harness setup that causes intermittent failures in Actions.
 
 We talked through a few options — retry logic on the test step, increasing
 timeouts, or refactoring the harness to do sequential setup. Nobody felt

@@ -44,7 +44,6 @@ echo "Scribe pre-script: searching Drive for docs matching '${SCRIBE_SEARCH_QUER
 # Derive the org from SCRIBE_REPO for repo discovery filtering
 SCRIBE_ORG="${SCRIBE_REPO%%/*}"
 DISCOVER_REPOS="${SCRIBE_DISCOVER_REPOS:-true}"
-MAX_DISCOVERED="${SCRIBE_MAX_DISCOVERED_REPOS:-15}"
 
 # ============================================================
 # Phase 1: Download meeting notes from Google Drive
@@ -253,10 +252,11 @@ unset ACCESS_TOKEN SA_EMAIL
 fi  # end of: if [[ -z "${SCRIBE_TEST_NOTES_FILE:-}" ]]
 
 # ============================================================
-# Phase 3: Discover repos from meeting notes + build target list
+# Phase 3: Build base target list + fetch org repo catalog
 # ============================================================
 
-# Start with the static base repos
+# Static base repos — the pre-script fetches full context for these.
+# The agent discovers additional repos from the notes at runtime.
 BASE_REPOS_LIST=()
 if [[ -n "${SCRIBE_TARGET_REPOS:-}" ]]; then
   IFS=',' read -ra BASE_REPOS_LIST <<< "${SCRIBE_TARGET_REPOS}"
@@ -267,67 +267,30 @@ else
   BASE_REPOS_LIST=("${SCRIBE_REPO}")
 fi
 
-# Discover repos referenced in the meeting notes via fuzzy name matching.
-# Real meeting transcripts use natural language ("the fix agent test repo")
-# not exact GitHub URLs. This fetches the org's repo list and matches names
-# with hyphens/underscores treated as optional word separators.
-DISCOVERED_REPOS=()
-if [[ "${DISCOVER_REPOS}" == "true" ]] && [[ "${DOC_INDEX}" -gt 0 ]]; then
+# Fetch org repo catalog (names + descriptions) for agent-driven discovery.
+# The agent reads this list, identifies repos discussed in the meeting notes,
+# and fetches their context on-demand using gh CLI inside the sandbox.
+ORG_REPOS_FILE="${WORK_DIR}/org-repos.json"
+if [[ "${DISCOVER_REPOS}" == "true" ]]; then
   echo ""
-  echo "Discovering repos from meeting notes (org: ${SCRIBE_ORG})..."
-
-  # Fetch all repo names in the org (single API call)
-  ORG_REPOS=$(GH_TOKEN="${GH_TOKEN}" gh repo list "${SCRIBE_ORG}" --limit 500 --json name --jq '.[].name' 2>/dev/null || true)
-  ORG_REPO_COUNT=$(echo "${ORG_REPOS}" | grep -c . || echo "0")
-  echo "  Org has ${ORG_REPO_COUNT} repos. Matching against notes..."
-
-  # Concatenate all notes into one lowercase blob for matching
-  NOTES_BLOB=$(cat "${NOTES_DIR}"/doc-*.txt 2>/dev/null | tr '[:upper:]' '[:lower:]')
-
-  while IFS= read -r repo_name; do
-    [[ -z "${repo_name}" ]] && continue
-    FULL_REPO="${SCRIBE_ORG}/${repo_name}"
-
-    # Skip if already in the base list
-    ALREADY=false
-    for existing in "${BASE_REPOS_LIST[@]}"; do
-      if [[ "${existing}" == "${FULL_REPO}" ]]; then
-        ALREADY=true
-        break
-      fi
-    done
-    [[ "${ALREADY}" == "true" ]] && continue
-
-    # Build a case-insensitive pattern: replace hyphens/underscores/dots with
-    # flexible separators so "fix-agent-test" matches "fix agent test" or
-    # "fix_agent_test" or "fix-agent-test" in the notes.
-    PATTERN=$(echo "${repo_name}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[-_.]+/[[:space:]_.-]?/g')
-
-    if echo "${NOTES_BLOB}" | grep -qP "${PATTERN}"; then
-      if [[ ${#DISCOVERED_REPOS[@]} -ge ${MAX_DISCOVERED} ]]; then
-        echo "  WARNING: hit discovery cap (${MAX_DISCOVERED}), ignoring further repos"
-        break
-      fi
-      DISCOVERED_REPOS+=("${FULL_REPO}")
-      echo "  Matched: ${repo_name}"
-    fi
-  done <<< "${ORG_REPOS}"
-
-  if [[ ${#DISCOVERED_REPOS[@]} -gt 0 ]]; then
-    echo "Discovered ${#DISCOVERED_REPOS[@]} additional repo(s) from notes: ${DISCOVERED_REPOS[*]}"
-  else
-    echo "No additional repos discovered from notes."
-  fi
+  echo "Fetching org repo catalog for agent discovery (org: ${SCRIBE_ORG})..."
+  GH_TOKEN="${GH_TOKEN}" gh repo list "${SCRIBE_ORG}" --limit 500 \
+    --json name,description \
+    | jq --arg org "${SCRIBE_ORG}" '[.[] | {name: .name, full_name: ($org + "/" + .name), description: (.description // "")}]' \
+    > "${ORG_REPOS_FILE}" 2>/dev/null || echo '[]' > "${ORG_REPOS_FILE}"
+  ORG_REPO_COUNT=$(jq 'length' "${ORG_REPOS_FILE}")
+  echo "  Org catalog: ${ORG_REPO_COUNT} repos"
+else
+  echo '[]' > "${ORG_REPOS_FILE}"
 fi
 
-# Combine base + discovered into the final target list
+# The target list for pre-script context fetching is ONLY the static base repos.
+# The agent will discover and fetch additional repos itself.
 TARGET_REPOS_LIST=("${BASE_REPOS_LIST[@]}")
-if [[ ${#DISCOVERED_REPOS[@]} -gt 0 ]]; then
-  TARGET_REPOS_LIST+=("${DISCOVERED_REPOS[@]}")
-fi
 
 echo ""
-echo "Final target repositories (${#TARGET_REPOS_LIST[@]}): ${TARGET_REPOS_LIST[*]}"
+echo "Base target repositories (${#TARGET_REPOS_LIST[@]}): ${TARGET_REPOS_LIST[*]}"
+echo "(Agent will discover additional repos from notes at runtime)"
 
 # Handle the no-docs-found early exit
 if [[ "${DOC_COUNT}" -eq 0 ]]; then
@@ -336,13 +299,14 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
   jq -n \
     --arg cutoff "${CUTOFF_DATE}" \
     --arg repo "${SCRIBE_REPO}" \
+    --arg org "${SCRIBE_ORG}" \
     --argjson target_repos "${TARGET_REPOS_JSON}" \
     --argjson doc_count 0 \
     --argjson issue_count 0 \
     --argjson closed_count 0 \
     --argjson pr_count 0 \
     --argjson doc_path_count 0 \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, target_repos: $target_repos, docs_downloaded: $doc_count, backlog_issues: $issue_count, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, org: $org, target_repos: $target_repos, discover_repos: false, org_repo_count: 0, docs_downloaded: $doc_count, backlog_issues: $issue_count, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
@@ -431,21 +395,29 @@ echo "Aggregate context: ${ISSUE_COUNT} open issues, ${CLOSED_COUNT} closed, ${P
 
 TARGET_REPOS_JSON=$(printf '%s\n' "${TARGET_REPOS_LIST[@]}" | jq -R . | jq -s .)
 
+ORG_REPO_COUNT_META=$(jq 'length' "${ORG_REPOS_FILE}" 2>/dev/null || echo "0")
+
 jq -n \
   --arg cutoff "${CUTOFF_DATE}" \
   --arg notes_url "${NOTES_URL}" \
   --arg repo "${SCRIBE_REPO}" \
+  --arg org "${SCRIBE_ORG}" \
   --argjson target_repos "${TARGET_REPOS_JSON}" \
   --argjson doc_count "${DOC_COUNT}" \
   --argjson issue_count "${ISSUE_COUNT}" \
   --argjson closed_count "${CLOSED_COUNT}" \
   --argjson pr_count "${PR_COUNT}" \
   --argjson doc_path_count "${DOC_PATH_COUNT}" \
+  --argjson org_repo_count "${ORG_REPO_COUNT_META}" \
+  --argjson discover_repos "$(if [[ "${DISCOVER_REPOS}" == "true" ]]; then echo true; else echo false; fi)" \
   '{
     cutoff_date: $cutoff,
     notes_url: $notes_url,
     repo: $repo,
+    org: $org,
     target_repos: $target_repos,
+    discover_repos: $discover_repos,
+    org_repo_count: $org_repo_count,
     docs_downloaded: $doc_count,
     backlog_issues: $issue_count,
     closed_issues: $closed_count,
